@@ -173,3 +173,24 @@ The optimized dequant (unrolled with batched byte reads, Codex-verified bit inde
 | 4096 | 0.921x | **0.981x** |
 
 The ratio is now flat at ~98% vs q8_0 regardless of context length. The previous degradation came from inefficient per-element byte reads in the dequant — reading the same qs/signs bytes 4 times instead of once.
+
+### Extended Verification (2K through 32K context)
+
+| Context | turbo3 tok/s | q8_0 tok/s | turbo3/q8_0 |
+|---------|-------------|-----------|-------------|
+| 2048 | 4694 | 4756 | 0.987x |
+| 4096 | 3049 | 3084 | 0.989x |
+| 8192 | 2287 | 2299 | 0.995x |
+| 16384 | 1737 | 1757 | 0.989x |
+| 32768 | 1211 | 1217 | 0.995x |
+
+**Ratio holds between 0.987x and 0.995x across ALL tested depths.** No degradation trend.
+
+### Quality After Fix
+
+| | PPL (32-chunk) | vs q8_0 |
+|---|---|---|
+| q8_0 | 5.414 ± 0.140 | baseline |
+| turbo3 | 5.471 ± 0.142 | +1.1% |
+
+Quality unchanged. The dequant optimization is purely a compute efficiency improvement, no effect on output values.
