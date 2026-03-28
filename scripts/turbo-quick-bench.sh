@@ -124,7 +124,7 @@ if [ -z "$SKIP_PPL" ]; then
     for ct in q8_0 turbo3 turbo4; do
         PPL=$($BUILD/llama-perplexity -m "$MODEL" -f "$WIKI" -c 512 \
             -ctk $ct -ctv $ct -fa on --chunks 8 -ngl 99 2>&1 | \
-            grep "Final estimate" | awk '{print $4}')
+            grep "Final estimate" | awk '{print $5}')
 
         if [ -z "$PPL" ]; then
             echo "  $ct: FAILED TO RUN 🔴"
@@ -148,7 +148,7 @@ echo "--- Decode Speed (tg128) ---"
 for ct in q8_0 turbo3 turbo4; do
     SPEED=$($BUILD/llama-bench -m "$MODEL" -ctk $ct -ctv $ct \
         -fa 1 -ngl 99 -p 0 -n 128 2>&1 | \
-        grep "tg128" | awk '{print $(NF-2)}')
+        grep "tg128" | awk -F'|' '{print $(NF-1)}' | awk '{print $1}')
 
     if [ -z "$SPEED" ]; then
         echo "  $ct: FAILED TO RUN 🔴"
@@ -175,7 +175,7 @@ if [ -f "scripts/niah_test.py" ]; then
             --depths-sweep 0,50,100 \
             --server-bin "$BUILD/llama-server" \
             --output-dir "/tmp/turbo-quick-niah-${ct}" \
-            2>&1 | grep -c "✅" || true)
+            2>&1 | grep "^|" | grep -c "✅" || true)
 
         TOTAL=3
         MISSED=$((TOTAL - RESULT))
