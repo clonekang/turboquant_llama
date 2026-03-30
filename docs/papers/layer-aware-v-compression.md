@@ -2,7 +2,9 @@
 
 ## Summary
 
-We demonstrate that protecting the first 2 and last 2 transformer layers with higher V precision while aggressively compressing the remaining layers recovers a meaningful fraction of the quality loss from uniform turbo2-V, at minimal compression cost. This policy — **Boundary V** (experimental, internal mode LA-V7) — achieves quality between turbo3-V and turbo2-V at effective compression between the two, consistently across 4 models spanning 7B-35B parameters. Validated at 512 and 8K context on Metal, with NIAH retrieval pass.
+We demonstrate that protecting the first 2 and last 2 transformer layers with higher V precision while aggressively compressing the remaining layers recovers a meaningful fraction of the quality loss from uniform turbo2-V, at minimal compression cost. This policy — **Boundary V** (experimental, internal mode LA-V7) — achieves quality between turbo3-V and turbo2-V at effective compression between the two. Validated on pure-attention models (phi-4, Qwen2.5-7B) at 512 and 8K context on Metal, with NIAH retrieval pass.
+
+**Important caveat:** Follow-up investigation (see Addendum) found that the current implementation mis-targets hybrid architectures (e.g., Qwen3.5) where only a subset of layers have KV attention caches. Results on hybrid models in this paper do not reflect the intended boundary policy. Boundary V should currently be evaluated only on pure-attention models.
 
 ## Background
 
@@ -33,25 +35,29 @@ All tests on M5 Max. Wikitext-2, 512 context, 4 chunks. K = q8_0 for all configs
 
 ### Quality (PPL)
 
-| Model | Layers | q8_0/q8_0 | q8_0/turbo3 | q8_0/turbo2 | **LA-V7** |
-|-------|--------|-----------|-------------|-------------|-----------|
-| phi-4-Q8_0 (14B) | 40 | 4.690 | 4.742 | 4.835 | **4.784** |
-| Qwen2.5-7B Q4_K_M | 28 | 6.577 | 6.707 | 6.911 | **6.835** |
-| Qwen3.5-35B MoE Q8_0 | 64 | — | 5.137 | 5.257 | **5.148** |
-| Qwen3.5-27B Dense Q8_0 | 36 | — | 6.273 | 6.534 | **6.423** |
+| Model | Layers | Arch | q8_0/q8_0 | q8_0/turbo3 | q8_0/turbo2 | **LA-V7** |
+|-------|--------|------|-----------|-------------|-------------|-----------|
+| phi-4-Q8_0 (14B) | 40 | Pure attn | 4.690 | 4.742 | 4.835 | **4.784** |
+| Qwen2.5-7B Q4_K_M | 28 | Pure attn | 6.577 | 6.707 | 6.911 | **6.835** |
+| Qwen3.5-35B MoE Q8_0 | 40 (10 KV)† | Hybrid | — | 5.137 | 5.257 | **5.148** |
+| Qwen3.5-27B Dense Q8_0 | 64 (16 KV)† | Hybrid | — | 6.273 | 6.534 | **6.423** |
 
-**Boundary V consistently lands between turbo3 and turbo2 quality, closer to turbo3. The improvement over uniform turbo2 is present on every tested model.**
+†Qwen3.5 models are hybrid architectures (Gated Delta Net + attention). Only every 4th layer has a KV cache. The current boundary selection logic targets raw layer index, not KV layer ordinal, so the boundary policy only upgrades 1-2 out of 10-16 actual KV layers on these models. See Addendum Part 3 for details.
+
+**On pure-attention models, Boundary V consistently lands between turbo3 and turbo2 quality, closer to turbo3.** The Qwen3.5 results show improvement but are confounded by the hybrid-architecture layer-selection issue.
 
 ### Effective compression
 
-| Model | Layers | Boundary V bits/val | vs turbo3 (3.5) | vs turbo2 (2.5) |
-|-------|--------|---------------|----------------|----------------|
-| phi-4 | 40 | 3.10 | 11% smaller | 24% larger |
-| Qwen2.5-7B | 28 | 3.36 | 4% smaller | 34% larger |
-| Qwen3.5-27B Dense | 36 | 3.17 | 9% smaller | 27% larger |
-| Qwen3.5-35B MoE | 64 | 2.88 | 18% smaller | 15% larger |
+| Model | Total Layers | Arch | Boundary V bits/val | vs turbo3 (3.5) | vs turbo2 (2.5) |
+|-------|:---:|------|:---:|----------------|----------------|
+| phi-4 | 40 | Pure attn | 3.10 | 11% smaller | 24% larger |
+| Qwen2.5-7B | 28 | Pure attn | 3.36 | 4% smaller | 34% larger |
+| Qwen3.5-27B Dense | 64 (16 KV)† | Hybrid | 2.88† | 18% smaller | 15% larger |
+| Qwen3.5-35B MoE | 40 (10 KV)† | Hybrid | 3.10† | 11% smaller | 24% larger |
 
-On deeper models, the 4 boundary layers are a smaller fraction of total layers, so effective compression approaches turbo2. On the 64-layer 35B MoE, Boundary V is only 15% larger than turbo2 but recovers 91% of the turbo2→turbo3 quality gap.
+†Effective bits for hybrid models are calculated against total layer count (current behavior). Because the boundary policy only upgrades 1-2 out of 10-16 actual KV layers on these models, these numbers do not reflect the intended boundary policy and should not be used to evaluate the approach.
+
+On pure-attention models, the 4 boundary layers are a meaningful fraction of total layers, and the compression cost is well-defined.
 
 ### Speed (phi-4-Q8_0, M5 Max, 8K context)
 
@@ -86,22 +92,29 @@ LA-V6 (last 8 layers) is worse than LA-V7 (boundary 4). This confirms that both 
 
 LA-V7 achieves its quality win by spending only 4/N layers worth of extra V budget. The cost scales inversely with model depth:
 
-| Model depth | Extra V cost vs turbo2 | Quality recovery vs turbo2→turbo3 gap |
-|-------------|----------------------|--------------------------------------|
-| 28 layers | +34% V | 62% of gap recovered |
-| 40 layers | +24% V | 55% of gap recovered |
-| 64 layers | +15% V | 91% of gap recovered |
+| Model | Depth | Arch | Extra V cost vs turbo2 | Quality recovery vs turbo2→turbo3 gap |
+|-------|:---:|------|----------------------|--------------------------------------|
+| Qwen2.5-7B | 28 | Pure attn | +34% V | 62% of gap recovered |
+| phi-4 | 40 | Pure attn | +24% V | 55% of gap recovered |
+| Qwen3.5-35B MoE | 40 (10 KV)† | Hybrid | +24% V | 91% of gap recovered† |
+| Qwen3.5-27B Dense | 64 (16 KV)† | Hybrid | +15% V | 43% of gap recovered† |
 
-For deep models (64+ layers), LA-V7 is an especially good trade: 15% more V memory for 91% of the quality gain.
+†Hybrid-model gap recovery numbers are confounded by the layer-selection bug (see Addendum Part 3). The apparent 91% recovery on the MoE model may partially reflect the boundary policy accidentally upgrading a high-impact KV layer rather than the intended systematic boundary protection.
 
 ## Conclusion
 
-Boundary V is a real mode worth keeping. It occupies a distinct position in the quality/compression tradeoff that no uniform V type achieves: quality between turbo3 and turbo2, at effective compression between the two (closer to turbo2 on deeper models). The implementation is 15 lines in one file, uses only existing turbo types, and introduces no new performance or correctness risks.
+Boundary V is a real effect on pure-attention models. It occupies a distinct position in the quality/compression tradeoff: quality between turbo3 and turbo2, at effective compression between the two. The implementation is 15 lines in one file, uses only existing turbo types, and has no performance overhead. However, the current boundary selection logic operates on raw layer index, which mis-targets hybrid architectures (see Addendum Part 3).
 
-**Recommended experimental aggressive-V policy to try when uniform turbo2-V is too lossy. Best suited for:**
+However, the effect is limited by two factors discovered in follow-up work (see Addendum): boundary gains dilute at longer context, and the current implementation does not properly target hybrid architectures.
+
+**Experimental aggressive-V policy for pure-attention models when uniform turbo2-V is too lossy. Best suited for:**
+- Pure-attention models (phi, Llama, Qwen2.5, Mistral) at short-to-medium context
 - Users who want more compression than turbo3-V but can't tolerate turbo2-V quality
-- Large deep models (64+ layers) where the boundary cost is minimal
 - Sensitive low-bit base weight models where every PPL point matters
+
+**Not currently recommended for:**
+- Hybrid architectures (Qwen3.5 family) until KV-layer-ordinal targeting is fixed
+- Very long context (16K+) where boundary layer impact is diluted
 
 ## Long-Context Validation
 
@@ -138,37 +151,39 @@ Boundary V does not impair retrieval on the tested sensitive model.
 
 ## Limitations
 
-1. **Tested at 512 and 8K context only.** 32K+ not yet validated. The boundary layer advantage likely shrinks further at very long context as middle-layer KV cache dominates.
+1. **Gains dilute at longer context.** Confirmed at 8K and 16K. At 16K on phi-4, Boundary V advantage over turbo2 is essentially zero (-0.006 PPL). Boundary layers are a fixed cost whose relative impact shrinks with KV cache size.
 
-2. **Boundary count is hardcoded at 2+2.** Optimal boundary width likely varies by model depth and architecture. 4 layers is a reasonable default but not proven optimal.
+2. **Hybrid architectures are mis-targeted.** The current boundary selection uses raw layer index, not KV layer ordinal. On Qwen3.5 models where only every 4th layer has KV attention, this means the policy upgrades 1-2 out of 10-16 actual KV layers instead of the intended boundary layers. See Addendum Part 3.
 
-3. **V-only.** K stays q8_0 throughout. This is by design (K precision dominates quality) but means the total KV compression is still bounded by the q8_0 K cache.
+3. **Boundary count is hardcoded at 2+2.** Follow-up testing of 4+4 showed it is not a stable universal improvement (see Addendum Part 2). 2+2 remains the recommended width.
 
-4. **Effective compression is between turbo3 and turbo2,** not below turbo2. This is not a way to beat turbo2 on compression — it's a way to beat turbo2 on quality at similar-ish compression.
+4. **V-only.** K stays q8_0 throughout. This is by design (K precision dominates quality) but means the total KV compression is still bounded by the q8_0 K cache.
 
-5. **Tested on Metal only.** CUDA parity not validated.
+5. **Effective compression is between turbo3 and turbo2,** not below turbo2. This is not a way to beat turbo2 on compression — it's a way to beat turbo2 on quality at similar-ish compression.
 
-6. **4 models tested.** The pattern is consistent but not exhaustive. Model families beyond Qwen and phi are untested.
+6. **Tested on Metal only.** CUDA parity not validated.
+
+7. **Pure-attention models only.** Validated on phi-4 and Qwen2.5-7B. Qwen3.5 hybrid results are confounded by the layer-selection bug and should not be used to evaluate the policy.
 
 ## Recommendation
 
-**Status: experimental, ready for documentation as an advanced option.**
+**Status: experimental, limited to pure-attention models.**
 
-Boundary V (experimental, internal mode LA-V7) has passed:
-- 4 models (7B-35B, dense + MoE, Q4_K_M + Q8_0)
-- 2 context lengths (512 + 8K)
+Boundary V (experimental, internal mode LA-V7) has passed on pure-attention models:
+- 2 pure-attention models (phi-4, Qwen2.5-7B) with consistent quality improvement
+- 2 context lengths (512 + 8K), with diminishing returns at longer context
 - Speed sanity (no penalty)
-- Consistent quality improvement over uniform turbo2
+- NIAH retrieval pass
 
-Not yet proven:
-- 32K+ context
-- CUDA
-- Non-Qwen/phi model families
-- Optimal boundary width
+Known limitations:
+- Hybrid architectures (Qwen3.5) are mis-targeted by current layer-selection logic
+- Gains dilute at 16K+ context
+- CUDA not validated
+- Boundary width (2+2 vs 4+4) is not universally better at wider settings
 
 **Next steps if pursuing further:**
-- 32K context validation on 35B MoE
-- Test boundary width 1+1 vs 2+2 vs 3+3
+- Fix boundary selection to use KV layer ordinal instead of raw layer index (hybrid architecture support)
+- CUDA validation
 - Consider auto-detection of boundary sensitivity per model
 
 ## How to Reproduce
@@ -203,57 +218,150 @@ TURBO_LAYER_ADAPTIVE=7 ./build/bin/llama-cli \
 
 Expected: Boundary V PPL is better than uniform turbo2, usually behind uniform turbo3.
 
-## Addendum: Boundary Width vs Boundary Precision (Mar 29, 2026)
+**Warning:** Evaluate Boundary V on **pure-attention models** (phi, Llama, Qwen2.5, Mistral). Hybrid architectures such as the Qwen3.5 family (Gated Delta Net + attention) are mis-targeted by the current boundary selection logic, which uses raw layer index instead of KV layer ordinal. Results on hybrid models do not reflect the intended policy.
 
-Following a community question (SharkWipf) about whether boundary V layers should use full f16 instead of q8_0, we tested both boundary width and boundary precision systematically.
+## Addendum: Boundary Width, Precision, and Architecture Constraints (Mar 29, 2026)
 
-### Test Matrix
+This addendum covers three rounds of follow-up investigation prompted by a community question (SharkWipf) about whether boundary V layers should use full f16 instead of q8_0.
 
-All configs use q8_0 K throughout. V allocation varies by mode:
+### Verified Model Metadata
 
-| Mode | Boundary width | Boundary type | Middle type |
-|------|---------------|--------------|-------------|
-| LA-V7 (current) | first2+last2 | q8_0 | turbo2 |
-| f16 narrow | first2+last2 | f16 | turbo2 |
-| q8_0 wide | first4+last4 | q8_0 | turbo2 |
-| f16 wide | first4+last4 | f16 | turbo2 |
+A critical finding during this investigation: some models tested are **hybrid architectures** where only a subset of layers have KV attention caches. This directly affects how boundary V policies operate.
 
-### Results
+| Model | Total Layers | KV Attention Layers | Architecture |
+|-------|:---:|:---:|---|
+| phi-4 Q8_0 | 40 | 40 | Pure attention |
+| Qwen2.5-7B Q4_K_M | 28 | 28 | Pure attention |
+| Qwen3.5-27B Dense Q8_0 | 64 | 16 | Hybrid (Gated Delta Net + attention, every 4th layer) |
+| Qwen3.5-35B MoE Q8_0 | 40 | 10 | Hybrid (Gated Delta Net + attention, every 4th layer) |
 
-**phi-4 Q8_0 (40 layers, 8 chunks, ctx=512):**
+### Part 1: Boundary Precision (f16 vs q8_0)
+
+**Question:** Should boundary V layers use f16 instead of q8_0?
+
+All configs use q8_0 K throughout. Tested at 512 context, 8 chunks.
+
+**phi-4 Q8_0 (40 layers, pure attention):**
 
 | Config | PPL | vs q8_0/q8_0 |
 |--------|-----|-------------|
 | q8_0/q8_0 baseline | 6.001 | — |
-| **wide q8_0** (first4+last4) | **6.047** | **+0.8%** |
-| wide f16 (first4+last4) | 6.065 | +1.1% |
-| narrow f16 (first2+last2) | 6.090 | +1.5% |
-| narrow q8_0 (LA-V7) | 6.110 | +1.8% |
+| first4+last4 V=q8_0 | 6.047 | +0.8% |
+| first4+last4 V=f16 | 6.065 | +1.1% |
+| first2+last2 V=f16 | 6.090 | +1.5% |
+| first2+last2 V=q8_0 (LA-V7) | 6.110 | +1.8% |
 | uniform q8_0/turbo2 | 6.106 | +1.7% |
 
-**Qwen3.5-27B Dense Q8_0 (64 layers, 8 chunks, ctx=512):**
+**Qwen3.5-27B Dense Q8_0 (64 total layers, 16 KV layers):**
 
 | Config | PPL | vs q8_0/q8_0 |
 |--------|-----|-------------|
 | q8_0/q8_0 baseline | 6.888 | — |
-| q8_0/turbo3 | 6.958 | +1.0% |
-| **wide q8_0** (first4+last4) | **7.038** | **+2.2%** |
-| wide f16 (first4+last4) | 7.043 | +2.2% |
-| narrow q8_0 (LA-V7) | 7.051 | +2.4% |
-| narrow f16 (first2+last2) | 7.050 | +2.3% |
+| first4+last4 V=q8_0 | 7.038 | +2.2% |
+| first4+last4 V=f16 | 7.043 | +2.2% |
+| first2+last2 V=q8_0 (LA-V7) | 7.051 | +2.4% |
+| first2+last2 V=f16 | 7.050 | +2.3% |
 | uniform q8_0/turbo2 | 7.159 | +3.9% |
 
-### Findings
+**Finding:** f16 does not consistently beat q8_0 for boundary layers. On phi-4, q8_0 boundary actually wins at both widths. On the 27B model they are within noise. f16 boundary layers are not worth the extra VRAM.
 
-1. **Boundary width matters more than boundary precision.** Going from 2 to 4 protected layers is a bigger quality improvement than upgrading those layers from q8_0 to f16. On phi-4, wide q8_0 (6.047) beats narrow f16 (6.090) decisively.
+### Part 2: Boundary Width (2+2 vs 4+4)
 
-2. **f16 does not consistently beat q8_0 for boundary layers.** On phi-4, q8_0 boundary wins at both widths. On 27B they are within noise. The extra VRAM cost of f16 boundary layers is not justified.
+**Question:** Does widening the boundary from first2+last2 to first4+last4 improve quality?
 
-3. **Wide boundary (first4+last4) is a meaningful improvement over LA-V7 (first2+last2).** phi-4: 6.047 vs 6.110 (-0.063). 27B: 7.038 vs 7.051 (-0.013). The improvement is larger on shallower models where 8 layers is a bigger fraction of total.
+Short-context results (512, 8 chunks) initially looked promising for 4+4. But the long-context validation told a different story.
 
-### Recommendation
+**Long-context results (8K, 2 chunks) on pure-attention models:**
 
-Update Boundary V default from first2+last2 to first4+last4 q8_0. The VRAM cost of 4 extra q8_0 V layers is minimal, and the quality improvement is consistent. f16 boundary is not recommended.
+phi-4 Q8_0 (40 KV layers):
+
+| Config | PPL (8K) | PPL (16K) | Gap closed (8K) |
+|--------|----------|-----------|:---:|
+| uniform turbo2 | 5.082 | 5.342 | 0% |
+| 2+2 q8_0 (LA-V7) | 5.078 | — | 5% |
+| 4+4 q8_0 | 5.055 | 5.335 | 35% |
+| uniform turbo3 | 5.004 | — | 100% |
+
+Qwen2.5-7B Q4_K_M (28 KV layers):
+
+| Config | PPL (8K) | Gap closed |
+|--------|----------|:---:|
+| uniform turbo2 | 5.524 | 0% |
+| 2+2 q8_0 (LA-V7) | 5.480 | 26% |
+| 4+4 q8_0 | 5.459 | 38% |
+| uniform turbo3 | 5.354 | 100% |
+
+Qwen3.5-27B Dense Q8_0 (16 KV layers, hybrid):
+
+| Config | PPL (8K) | Gap closed |
+|--------|----------|:---:|
+| uniform turbo2 | 6.496 | 0% |
+| 2+2 q8_0 (LA-V7) | 6.454 | 24% |
+| 4+4 q8_0 | 6.476 | 12% |
+| uniform turbo3 | 6.323 | 100% |
+
+**Findings:**
+
+1. **4+4 beats 2+2 on pure-attention models** (phi-4, Qwen2.5-7B) at both 512 and 8K context. The improvement is real but modest.
+
+2. **4+4 is worse than 2+2 on the hybrid 27B model at 8K.** This reversal is explained by the architecture bug (see Part 3).
+
+3. **Boundary V gains dilute with context length.** At 16K on phi-4, the 4+4 advantage over turbo2 shrinks to -0.006 PPL (essentially zero). Boundary layers are a fixed cost; their relative importance shrinks as the total KV cache grows.
+
+4. **4+4 is not a stable universal upgrade over 2+2.** The result is architecture-dependent and context-length-dependent. Not enough evidence to promote it as a second tier.
+
+### Part 3: Hybrid Architecture Bug
+
+**The current Boundary V implementation has a policy bug on hybrid architectures.**
+
+The boundary selection logic checks the raw transformer layer index (`il`) against total `n_layer`:
+
+```cpp
+const bool is_boundary = (il < 2 || il >= n_layer - 2);
+```
+
+On Qwen3.5-27B (64 total layers, KV attention on layers 3, 7, 11, ..., 63):
+- Mode 7 (first2+last2): Only layer 63 is both a boundary layer AND a KV layer. **1 out of 16 KV layers upgraded.**
+- Mode 10 (first4+last4): Layers 3 and 63 are boundary+KV. **2 out of 16 KV layers upgraded.**
+
+This means the boundary policy barely touches the model's actual KV cache on hybrid architectures. The Qwen3.5 results in the original paper are valid data but do not represent the intended policy of protecting the first and last KV attention layers.
+
+**To fix:** The boundary check should operate on KV layer ordinal (e.g., first 2 and last 2 *KV attention* layers), not raw transformer layer index. This fix is not implemented yet.
+
+### Effective Compression (using verified layer counts)
+
+q8_0 = 8.5 bits/val, turbo2 = 2.5 bits/val, turbo3 = 3.5 bits/val.
+
+| Model | KV Layers | 2+2 bits/val | 4+4 bits/val | turbo3 |
+|-------|:---:|:---:|:---:|:---:|
+| phi-4 | 40 | 3.10 | 3.70 | 3.50 |
+| Qwen2.5-7B | 28 | 3.36 | 4.21 | 3.50 |
+| Qwen3.5-27B | 16* | 2.88* | 3.25* | 3.50 |
+
+*Qwen3.5-27B effective bits are calculated against 64 total layers (current buggy behavior), not 16 KV layers.
+
+Note: On Qwen2.5-7B, 4+4 uses 4.21 bits/val — 20% more than turbo3 (3.50) for only 38% of turbo3's quality gain. Poor compression efficiency on shallow models.
+
+### Speed
+
+Speed sanity on phi-4 showed no clear regression from boundary modes, but decode variance was high due to concurrent GPU load during testing. The earlier clean speed sanity (from the initial investigation) showed no penalty. No speed concern is raised.
+
+### Updated Recommendation
+
+**Keep 2+2 q8_0 (LA-V7) as the sole experimental Boundary V mode.** Do not introduce 4+4 as a second tier.
+
+Rationale:
+- Boundary V shows real quality gains on **pure-attention models** (phi-4, Qwen2.5-7B). The effect is consistent and reproducible.
+- Gains dilute at longer context. Boundary V is most useful at short-to-medium context where boundary layers are a meaningful fraction of total KV cache.
+- **4+4 is not a stable universal upgrade** over 2+2. It helps on some models/contexts and hurts on others.
+- **Hybrid architectures are not properly supported.** The current boundary selection logic mis-targets these models. Until the layer-selection logic is fixed to operate on KV layer ordinal, Boundary V should not be recommended on hybrid models (Qwen3.5 family).
+- **Uniform turbo3 remains the cleaner practical default** for users who want better-than-turbo2 V quality. Boundary V is an advanced experimental option for users who specifically want turbo2-level compression with partial quality recovery.
+
+**Corrected framing (supersedes earlier addendum):**
+- Do NOT update Boundary V default to 4+4. Keep 2+2.
+- f16 boundary layers are not justified (confirmed).
+- Boundary width matters on pure-attention models, but not enough to warrant a second tier.
+- The most interesting next step is fixing the boundary selection to use KV layer ordinal instead of raw layer index, which would make Boundary V properly target hybrid architectures.
 
 ## Files Changed
 
