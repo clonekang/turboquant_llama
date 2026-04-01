@@ -28,6 +28,25 @@ The same-top-p metric shows turbo3 agrees with f16 on the top token 94-96% of th
 
 Dense model shows lower KLD across all cache types because the dense attention pattern is more concentrated (fewer heads, more focused attention), making the KV cache less sensitive to quantization noise.
 
+## KLD Stability Across Context Length (2026-04-01)
+
+**Hardware:** Apple M2 Pro 16GB
+**Model:** Qwen2.5-1.5B-Instruct Q4_K_M
+**Config:** asymmetric q8_0-K / turbo3-V, flash attention on
+**Baseline:** q8_0/q8_0 logits at each context length (4 chunks wikitext-2)
+
+| Context | Mean KLD | Max KLD | RMS Δp | Same top-p % | PPL (turbo3) | PPL (q8_0) |
+|---------|----------|---------|--------|-------------|--------------|------------|
+| 2,048 | 0.01976 | 1.543 | 3.83% | 92.52% | 10.48 | 10.24 |
+| 4,096 | 0.01819 | 2.201 | 3.85% | 93.31% | 8.59 | 8.41 |
+| 8,192 | 0.01666 | 1.658 | 3.72% | 93.86% | 8.51 | 8.33 |
+
+### Observation
+
+Mean KLD decreases from 0.0198 at 2K to 0.0167 at 8K. Same-top-p improves from 92.5% to 93.9%. Max KLD outliers do not grow monotonically (4K has the highest max at 2.20, 8K is lower at 1.66).
+
+Tested on Qwen2.5-1.5B (M2 Pro 16GB constraint). Larger models at longer context (32K+) may behave differently. The M5 Max data (above) covers larger models but only at ctx=512.
+
 ## Raw Logs
 
 - `~/local_llms/llama.cpp/results/kld_moe_q8_0.log`

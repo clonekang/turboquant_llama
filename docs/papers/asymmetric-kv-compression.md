@@ -248,6 +248,13 @@ These findings have been independently confirmed by multiple researchers:
 - Full asymmetric K/V PPL matrix (ctx=512, Qwen3.5-27B Q6_K): **V type dominates PPL** (columns vary more than rows). K=turbo3/V=turbo3 (6.7251) approximately equals K=q8_0/V=turbo3 (6.6885). Independent CUDA confirmation that K precision matters less than V precision for quality, and that asymmetric is not needed on Q6_K+ weights
 - [Detailed results](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16404751) with KL divergence, NIAH, and speed across 4 GPUs and 3 architecture generations
 
+**@sjoerdmaessen (Sjoerd Maessen)** — [Qwen3.5-122B-A10B Q5_K_S, 2x NVIDIA L40S 48GB (SM89), 82K context](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16412852) (2026-04-01):
+- Strongest production validation of asymmetric K/V to date. Asymmetric q8_0/turbo3: **100% decode recovery** (61.1 t/s matching q8_0 baseline exactly) with 31% KV memory savings (1,046 to 715 MiB)
+- [Follow-up](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16413776): Asymmetric q8_0/turbo2 also **100% decode recovery** (61.3 t/s) with 34% KV savings (1,046 to 686 MiB). **V compression is free down to 2-bit** on this 122B model. Boundary V auto-enabled, no penalty
+- Symmetric turbo3/turbo3: -6.4% decode. The entire TG penalty is K-side dequant, confirming the core asymmetric thesis on production multi-GPU hardware
+- First 122B model tested, first L40S (data center Ada) validation, first multi-GPU split validation
+- Dual-slot concurrent with turbo3: +44% aggregate throughput. turbo2 dual-slot: +46%
+
 **@mudler (Ettore Di Giacinto)** — [APEX launch](https://github.com/mudler/apex-quant), [LocalAI](https://github.com/mudler/LocalAI) (44.7k stars) (2026-04-01):
 - Released APEX (Adaptive Precision for EXpert Models), a MoE-aware mixed-precision weight quantization method for Qwen3.5-35B-A3B
 - Explicitly recommends pairing APEX with TurboQuant KV cache compression in the [launch announcement](https://huggingface.co/mudler/Qwen3.5-35B-A3B-APEX-GGUF). First major open source project to officially integrate TurboQuant into their recommended stack

@@ -227,6 +227,11 @@ Not validated:
 - Kernel optimizations yield +13-69% decode improvement at 32K across 4 GPUs vs base TurboQuant implementation
 - Confirms V compression dominance from asymmetric K/V matrix: V type varies PPL more than K type
 
+**@sjoerdmaessen (Sjoerd Maessen)** — [Qwen3.5-122B-A10B Q5_K_S, 2x NVIDIA L40S 48GB, 82K context](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16412852) (2026-04-01):
+- turbo2 at 82K on this hybrid MoE (12 attention layers + 36 recurrent): TG 57.7 t/s vs q8_0 61.1 t/s (-5.6%). **No crossover** where turbo2 beats q8_0, unlike our Qwen3.5-35B finding at 32K on Metal
+- Suggests the turbo2 decode crossover is architecture-dependent: hybrid MoE with only 12 KV attention layers may not generate enough cache bandwidth savings for turbo2 to win, unlike pure-transformer MoE with more KV layers
+- Asymmetric q8_0/turbo3: 100% decode recovery, confirming V compression is free on this MoE architecture
+
 **@mudler (Ettore Di Giacinto)** — [APEX](https://github.com/mudler/apex-quant) + TurboQuant integration, [LocalAI](https://github.com/mudler/LocalAI) (44.7k stars) (2026-04-01):
 - Tested TurboQuant KV cache compression on top of APEX MoE weight quantization for Qwen3.5-35B-A3B at 8K context
 - +14% prompt processing speedup across all APEX tiers (I-Quality: 1,752 to 2,003 t/s, I-Compact: 1,714 to 1,959 t/s, Mini: 1,696 to 1,938 t/s)
