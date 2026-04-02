@@ -215,13 +215,13 @@ wget https://huggingface.co/nisten/llama3-8b-instruct-32k-gguf/raw/main/wiki.tes
 
 ### Step 5: Share results
 
-Post your numbers in the [GitHub discussion thread](https://github.com/ggml-org/llama.cpp/discussions/20969) or open an issue on the [repo](https://github.com/TheTom/llama-cpp-turboquant).
+Post your numbers on [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45). This is where we are tracking all test results before merge.
 
 Include: model name, weight quantization, GPU, VRAM, turbo config, PPL, and speed numbers.
 
 ## Weight Compression (TQ4_1S) — Experimental
 
-> **Backend support:** Metal (Apple Silicon) and CUDA (NVIDIA). The quantization step (llama-quantize) works on any platform. HIP/ROCm is not yet ported. Windows MSVC is supported as of the latest PR.
+> **Backend support:** Metal (Apple Silicon), CUDA (NVIDIA), and AMD HIP/ROCm (tested on RX 9070 XT, RDNA 4). The quantization step (llama-quantize) works on any platform. Windows builds supported for both MSVC (CUDA) and clang (HIP).
 
 TQ4_1S applies WHT rotation + Lloyd-Max polar quantization to model weights (not just KV cache). This is post-training quantization -- no retraining or calibration required. Apply directly to Q8_0 GGUF models.
 
@@ -362,7 +362,7 @@ Models marked with * need community validation. Predictions based on `convert_hf
 **Hybrid:** attn=TQ4_1S, ALL FFN=Q4_K, boundary 2+2. For Llama-family. Max compression, +16% PPL.
 **Premium:** attn=TQ4_1S, ffn_gate/up=Q5_K, ffn_down=Q6_K, boundary 4+4. For Llama-family. Best quality, +5.8% PPL.
 
-The key discriminator is whether the model's GGUF conversion permutes Q/K weights for RoPE (`undo_permute` in `convert_hf_to_gguf.py`). Models without permutation tend to work well with Config I. However, permutation alone does not fully explain the sensitivity difference (see paper Section 5.7). Treat predictions as directional. **Community validation on untested models is very welcome** -- post results in the [discussion thread](https://github.com/ggml-org/llama.cpp/discussions/20969).
+The key discriminator is whether the model's GGUF conversion permutes Q/K weights for RoPE (`undo_permute` in `convert_hf_to_gguf.py`). Models without permutation tend to work well with Config I. However, permutation alone does not fully explain the sensitivity difference (see paper Section 5.7). Treat predictions as directional. **Community validation on untested models is very welcome** -- post results on [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45).
 
 ### Benchmark a Compressed Model
 
