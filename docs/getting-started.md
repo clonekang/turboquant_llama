@@ -225,7 +225,7 @@ Include: model name, weight quantization, GPU, VRAM, turbo config, PPL, and spee
 
 TQ4_1S applies WHT rotation + Lloyd-Max polar quantization to model weights (not just KV cache). This is post-training quantization -- no retraining or calibration required. Apply directly to Q8_0 GGUF models.
 
-**Code:** [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45) (branch `pr/tq4-weight-compression`). Build from that branch to use weight compression.
+**Code:** Weight compression is now on [main](https://github.com/TheTom/llama-cpp-turboquant/tree/feature/turboquant-kv-cache). No separate branch needed.
 
 See the [weight compression paper](papers/weight-compression-tq4.md) for full methodology and results.
 

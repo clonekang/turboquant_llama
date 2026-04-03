@@ -4,7 +4,7 @@
 Independent Researcher
 GitHub: [@TheTom](https://github.com/TheTom)
 
-**Code:** [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45) — branch `pr/tq4-weight-compression` (Metal + CUDA)
+**Code:** [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant/tree/feature/turboquant-kv-cache) — merged to main (Metal + CUDA). [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45) has the full testing log.
 **Getting started:** [docs/getting-started.md](https://github.com/TheTom/turboquant_plus/blob/main/docs/getting-started.md)
 
 ---

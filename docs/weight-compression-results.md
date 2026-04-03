@@ -2,7 +2,7 @@
 
 Post-training weight compression for llama.cpp. No retraining, no calibration data. One command.
 
-**Code:** [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45)
+**Code:** [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant/tree/feature/turboquant-kv-cache) (merged to main). [PR #45](https://github.com/TheTom/llama-cpp-turboquant/pull/45) has the full testing log.
 **Paper:** [weight-compression-tq4.md](papers/weight-compression-tq4.md)
 **Getting Started:** [getting-started.md](getting-started.md#weight-compression-tq4_1s--experimental)
 
