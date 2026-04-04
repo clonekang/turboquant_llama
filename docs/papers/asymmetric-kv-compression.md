@@ -294,6 +294,34 @@ These findings have been independently confirmed by multiple researchers:
 - Cross-architecture confirmation: Ada SM 89 and Blackwell SM 120 (CUDA) join Metal, Ampere, HIP, and Vulkan as backends where asymmetric outperforms symmetric
 - Independent tester on independent fork (spiritbuun, not TheTom), further reducing single-implementation bias
 
+**@WaveboSF** — [turboquant_plus vs spiritbuun: fused mmvq kernel benchmark](https://github.com/ggml-org/llama.cpp/discussions/20969#discussioncomment-16449270) (2026-04-04):
+- Follow-up comparing spiritbuun fork against turboquant_plus with @signalnine's V12 fused single-phase mmvq kernel (shared memory instead of global scratch buffer). **signalnine authored the kernel; TheTom collaborated on integration.**
+- 80 runs per fork: 5 KV configs × 4 LA modes × 2 GPUs × 2 CUDA versions. TurboQuant QLauncher v0.41
+- **RTX 5090 (Blackwell) — Decode penalty virtually eliminated:**
+
+| KV Config | spiritbuun | turboquant_plus | Improvement |
+|-----------|-----------|----------------|-------------|
+| q8_0+t4 | -25.2% | **-6.9%** | 3.7× better |
+| q8_0+t3 | -28.1% | **-7.2%** | 3.9× better |
+| t3/t3 | -39.7% | **-7.3%** | 5.4× better |
+| t4/t4 | -36.4% | **-8.6%** | 4.2× better |
+
+- **RTX 4090 (Ada) — Also benefits (2.5–3.4×):**
+
+| KV Config | spiritbuun | turboquant_plus | Improvement |
+|-----------|-----------|----------------|-------------|
+| q8_0+t4 | -6.9% | **-2.5%** | 2.8× better |
+| q8_0+t3 | -8.2% | **-2.5%** | 3.3× better |
+| t3/t3 | -14.9% | **-4.4%** | 3.4× better |
+| t4/t4 | -13.9% | **-5.5%** | 2.5× better |
+
+- **Prefill flips from penalty to bonus on Blackwell:** spiritbuun lost up to -12% prefill on RTX 5090. turboquant_plus gains +4–9% prefill — faster than f16. Wins on both prefill AND decode
+- **RTX 5090 now matches RTX 4090:** penalty gap narrows from 3–4× to ~1.7× (7% vs 4%). Memory hierarchy bottleneck solved
+- **Absolute speed:** Best decode on RTX 5090: 216.29 t/s (turboquant_plus, q8_0+t4 LA=7) vs 173.43 t/s (spiritbuun, q8_0+t4 LA=1). +25% more tokens/s at identical compression
+- CUDA 12.8 vs 13.2: <1pp difference on turboquant_plus. Improvement is purely from the kernel, not the toolkit
+- LA mode behavior differs: turboquant_plus prefers LA=7 for asymmetric, LA=1 for symmetric (but spread is <2pp, LA=off already good)
+- Confirmed q8_0/q8_0 fails on both forks — q8_0 only valid as K-component paired with turbo V-type
+
 **@AmesianX** — [Qwen3-14B Q4_K_M, DGX Spark GB10, deterministic task benchmark](https://github.com/AmesianX/TurboQuant/issues/11#issuecomment-4187156467) (2026-04-04):
 - Re-ran full 65-task benchmark at temp=0 (deterministic) following @TheTom's suggestion for proper KV cache fidelity isolation
 - Symmetric tbqp3/tbq3 vs f16/f16: **identical 20/65 (30.8%)** accuracy, 7:7 balanced divergence
