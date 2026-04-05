@@ -577,10 +577,20 @@ TurboQuant KV cache compression is being ported to Apple's [MLX framework](https
 | turbo4 asymmetric | 1.5082 | +1.91% | 15.5 | 87% |
 | turbo4 symmetric | 1.5219 | +2.83% | 15.4 | 86% |
 
+**Quality Validation (Qwen2.5-7B 8bit, dense, all 28 layers KV):**
+
+| Test | Symmetric turbo4 | Asymmetric (K=FP16) |
+|------|-----------------|---------------------|
+| **KLD** | 6.86 (broken) | **0.003** |
+| **Top-1 match** | 10.5% (broken) | **98.1%** |
+| **NIAH** | 0/15 FAIL | **15/15 PASS** |
+
+> [!warning] **Symmetric turbo is catastrophic on dense models.** All K layers compressed → softmax error compounds across 28 layers. Asymmetric (K=FP16, V=turbo4) is mandatory for dense architectures. Hybrid models (Qwen3.5) with delta net layers are accidentally safe because only a fraction of layers use KV cache.
+
 **Dense models (short context, deferred compression):**
 
-| Model | Baseline Decode | turbo4 Decode | PPL Delta |
-|-------|----------------|---------------|-----------|
+| Model | Baseline Decode | turbo4 asym Decode | PPL Delta |
+|-------|----------------|-------------------|-----------|
 | Qwen2.5-7B 8bit | 64.2 | 64.1 | 0.00% |
 | phi-4 8bit | 32.9 | 32.7 | 0.00% |
 
