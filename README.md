@@ -548,16 +548,15 @@ TurboQuant KV cache compression is being ported to Apple's [MLX framework](https
 
 **Fork:** [TheTom/mlx `feature/turboquant-plus`](https://github.com/TheTom/mlx/tree/feature/turboquant-plus)
 
-### Preliminary Results (Qwen3.5-2B 8bit, M5 Max)
+### Results (M5 Max)
 
-**Speed + Quality:**
+**Qwen2.5-3B 4bit — delegated KVCache (5-run avg, 500 decode tokens, [`7ad7500`](https://github.com/TheTom/mlx/commit/7ad75002bbf87f5d1774859e94e2a76ccbd3a56d)):**
 
-| Config | Prefill | Decode | vs Baseline | PPL | PPL Delta | V Savings |
-|--------|---------|--------|-------------|-----|-----------|------------|
-| Baseline (f16 KV) | 584 | **204** | 100% | 3.0732 | — | — |
-| turbo4 all fused | 1,153 (+97%) | 168 | 83% | 3.0890 | +0.51% | 73% |
-| turbo4 asymmetric fused + boundary | 140 (+106%) | **60.6** | **96%** | 3.6786 | **-0.05%** | 73% |
-| turbo3 | 264 | 170 | 83% | 3.0702 | -0.10% | 80% |
+| Config | Decode tok/s | vs Baseline | PPL | PPL Delta |
+|--------|-------------|-------------|-----|-----------|
+| Baseline (f16 KV) | 172.6 | 100% | 1.8764 | — |
+| **Sym turbo4** | **171.2** | **99.2%** | 1.9083 | +1.70% |
+| **Asym (K=FP16, V=turbo4)** | **171.0** | **99.0%** | 1.8859 | +0.51% |
 
 **Quality:** Output text indistinguishable from baseline. KL divergence < 0.001, cosine similarity > 0.989.
 
@@ -609,15 +608,18 @@ TurboQuant KV cache compression is being ported to Apple's [MLX framework](https
 
 M2 Pro shows more decode regression at long context — lower memory bandwidth amplifies turbo overhead.
 
-**M5 Max Context Scaling (Qwen2.5-7B 8bit, asymmetric):**
+**M5 Max Context Scaling (Qwen2.5-7B 8bit, delegated KVCache, [`7ad7500`](https://github.com/TheTom/mlx/commit/7ad75002bbf87f5d1774859e94e2a76ccbd3a56d)):**
 
-| Context | Baseline | Turbo Asymmetric | vs Baseline |
-|---------|----------|-----------------|-------------|
-| 1K | 51 | 46 | 90% |
-| 4K | 83 | 51 | 61% |
-| 8K | 51 | 35 | 69% |
-| 16K | 21 | 15 | 71% |
-| 32K | 6 | 5 | 83% |
+| Context | Baseline | Sym turbo4 | vs Baseline | Asym (K=FP16) | vs Baseline |
+|---------|----------|-----------|-------------|---------------|-------------|
+| 512 | 63.6 | 63.6 | **100%** | 64.0 | **101%** |
+| 1K | 63.1 | 62.8 | **100%** | 62.6 | **99%** |
+| 2K | 62.7 | 61.8 | **98%** | 62.2 | **99%** |
+| 4K | 61.0 | 60.2 | **99%** | 61.0 | **100%** |
+| 8K | 58.2 | 56.9 | **98%** | 57.7 | **99%** |
+| 16K | 54.6 | 53.0 | **97%** | 53.8 | **99%** |
+
+> Previous numbers (61-83%) were measured before the delegated KVCache optimization (`7ad7500`). Root cause was `mx.concatenate` allocating new arrays every decode step × n_layers. Fixed by delegating FP16 storage to an internal KVCache with pre-allocated buffers.
 
 **MLX Python vs llama.cpp (Qwen2.5-7B, M5 Max):**
 
@@ -641,10 +643,11 @@ MLX decode matches llama.cpp. Prefill 37% slower (lazy graph vs pre-compiled).
 
 ```python
 import mlx_lm
-from mlx.nn.layers.turbo_kv_cache import make_turbo_cache
+from mlx.nn.layers.turbo_kv_cache import TurboKVCache
 
 model, tokenizer = mlx_lm.load("mlx-community/Qwen2.5-7B-Instruct-8bit")
-cache = make_turbo_cache(model, bits=4)  # K+V turbo4, boundary 2+2
+n_layers = len(model.model.layers)
+cache = [TurboKVCache(bits=4, key_bits=4) for _ in range(n_layers)]
 text = mlx_lm.generate(model, tokenizer, prompt="Hello!",
                         max_tokens=200, prompt_cache=cache, verbose=True)
 ```
@@ -656,15 +659,15 @@ pip install mlx-lm
 
 ### How it works
 
-`TurboKVCacheLite` wraps mlx's native `KVCache` with TurboQuant 4-bit K+V compression. Drop-in compatible with **mlx-lm** and **mlx-vlm** — no framework changes needed.
+`TurboKVCache` is a drop-in replacement for mlx-lm's `KVCache` that adds TurboQuant 4-bit K+V compression. Compatible with **mlx-lm** and **mlx-vlm** — no framework changes needed.
 
-**Compact mode** (`compact_turbo_cache`): compresses K+V using TurboQuant (SRHT + Lloyd-Max) after prefill. On first decode step, dequants once to FP16 and runs pure native SDPA from there. Zero custom kernels in the attention path.
+**Delegated KVCache architecture** ([`7ad7500`](https://github.com/TheTom/mlx/commit/7ad75002bbf87f5d1774859e94e2a76ccbd3a56d)): During prefill, stores raw FP16. On first decode step, compresses to packed TurboQuant storage and seeds an internal `KVCache` with decoded FP16. Subsequent decode tokens go through the native KVCache (pre-allocated buffers, zero-alloc slice-assign). Packed storage updated in background via periodic batch recompression on CPU stream.
 
-- 10–64% KV cache savings depending on context length
+- **97–100% baseline decode speed** across 512–16K context (Qwen2.5-7B, M5 Max)
+- +0.51% PPL (asymmetric), +1.70% PPL (symmetric)
 - 99% answer agreement with baseline (520 multimodal samples)
-- 0.79–0.99x decode speedup (dequant-once overhead, amortizes over generation)
 - Works with stock mlx-lm and mlx-vlm, no fork needed
-- All 8 TurboQuant+ papers applied (beta centroids, dual SRHT signs, boundary layers)
+- All TurboQuant+ papers applied (beta centroids, dual SRHT signs, boundary layers)
 
 ### Quick Start — mlx-vlm (multimodal)
 
