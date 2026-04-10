@@ -13,14 +13,14 @@ This note summarizes the current Gemma 4 benchmark picture after `mlx-swift-lm` 
 
 ### MLX Swift
 
-- Repo: `mlx-swift-lm`
-- Branch at test time: `session/all-perf-fixes`
+- Repo: [`ekryski/mlx-swift-lm`](https://github.com/ekryski/mlx-swift-lm)
+- PR: [#14](https://github.com/ekryski/mlx-swift-lm/pull/14) (`session/all-perf-fixes`)
 - Model: `mlx-community/gemma-4-e2b-it-4bit`
 - KV modes: `none`, `turbo4v2`
 
 ### llama.cpp
 
-- Repo: `TheTom/llama-cpp-turboquant`
+- Repo: [`TheTom/llama.cpp`](https://github.com/TheTom/llama.cpp) (TurboQuant fork)
 - Branch at test time: `feature/turboquant-kv-cache`
 - Model: `bartowski/google_gemma-4-E2B-it-Q4_K_L.gguf`
 - KV modes: no-turbo baseline, `turbo4v2`
