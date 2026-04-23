@@ -1,8 +1,8 @@
 # TurboQuant+
 
-> ### [Getting Started Guide](docs/getting-started.md) | [Configuration Recommendations](docs/turboquant-recommendations.md) | [llama.cpp Fork](https://github.com/TheTom/llama-cpp-turboquant) | [Swift MLX Fork](https://github.com/ekryski/mlx-swift-lm) | [vllm-swift](https://github.com/TheTom/vllm-swift) | [Commercial Support](https://x.com/no_stp_on_snek)
+> ### [Getting Started Guide](docs/getting-started.md) | [Configuration Recommendations](docs/turboquant-recommendations.md) | [llama.cpp Fork](https://github.com/TheTom/llama-cpp-turboquant) | [Swift MLX Fork](https://github.com/ekryski/mlx-swift-lm/tree/alpha) | [vllm-swift](https://github.com/TheTom/vllm-swift) | [Commercial Support](https://x.com/no_stp_on_snek)
 
-> **🍎 On Apple Silicon and want the fastest path?** Use [ekryski/mlx-swift-lm](https://github.com/ekryski/mlx-swift-lm) — Eric Kryski's Swift MLX implementation that I've been actively collaborating on. Native Swift, ~2.5x faster decode than Python mlx-lm, full TurboQuant+ support including turbo4v2 (4-bit K + 2-bit V). 144 tok/s on Qwen3.5-35B-A3B MoE at 4K on M5 Max. For OpenAI-compatible serving, use [vllm-swift](https://github.com/TheTom/vllm-swift) — a native Swift/Metal backend for vLLM built on mlx-swift-lm. No Python in the inference hot path, works with Hermes, OpenCode, and any OpenAI client. This llama.cpp repo is for cross-platform deployment (CUDA, ROCm, CPU, Metal).
+> **🍎 On Apple Silicon and want the fastest path?** Use [ekryski/mlx-swift-lm](https://github.com/ekryski/mlx-swift-lm/tree/alpha) — Eric Kryski's Swift MLX implementation that I've been actively collaborating on. Native Swift, ~2.5x faster decode than Python mlx-lm, full TurboQuant+ support including turbo4v2 (4-bit K + 2-bit V). 144 tok/s on Qwen3.5-35B-A3B MoE at 4K on M5 Max. For OpenAI-compatible serving, use [vllm-swift](https://github.com/TheTom/vllm-swift) — a native Swift/Metal backend for vLLM built on mlx-swift-lm. No Python in the inference hot path, works with Hermes, OpenCode, and any OpenAI client. This llama.cpp repo is for cross-platform deployment (CUDA, ROCm, CPU, Metal).
 
 ## Prebuilt Binaries
 
@@ -537,7 +537,7 @@ docs/
 | Block size optimization | ✅ | 32→128, 12% better compression, zero quality cost |
 | Upstream coordination | 🔄 | llama.cpp PR preparation ([#27](https://github.com/TheTom/turboquant_plus/issues/27)) |
 | TurboQuant+ extensions | ⏳ | Adaptive bits, temporal decay, MoE-aware compression |
-| MLX Swift port | 🔄 | Active collaboration with @ekryski on [mlx-swift-lm](https://github.com/ekryski/mlx-swift-lm) — turbo4v2 working, Gemma4 fixes in progress |
+| MLX Swift port | 🔄 | Active collaboration with @ekryski on [mlx-swift-lm](https://github.com/ekryski/mlx-swift-lm/tree/alpha) — turbo4v2 working, Gemma4 fixes in progress |
 
 ## Paper Reference
 
