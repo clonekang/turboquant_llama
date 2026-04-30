@@ -605,3 +605,319 @@ The implementation commits on the `experiment/triattention-integration` branch o
 | `fd8941b` | Results archive with all run logs |
 
 Any downstream reviewer can `git checkout` any of these to reproduce the progression.
+
+---
+
+## 9. Addendum: vLLM Port to AMD MI300X
+
+This section was added on 2026-04-30, after the original V3 paper, to document the port of V3 from llama.cpp/Metal to vLLM/ROCm-Triton on AMD MI300X. Same algorithm, same calibration, same selection policy. Different runtime, different rotation kernel, different cache layout.
+
+The primary motivation for the port was a follow-up collaboration with AMD around TurboQuant+ on MI300X serving. AMD specifically asked about how V3 transfers across runtimes and what new failure modes the port surfaces.
+
+### 9.1 Hardware
+
+| Component | Spec |
+|-----------|------|
+| GPU | 1× AMD Instinct MI300X |
+| Memory | 192 GB HBM3 (5.3 TB/s) |
+| Architecture | gfx942 |
+| Driver | ROCm 7.2.26015 |
+| Triton | 3.6 |
+| PyTorch | 2.11+rocm7.2 |
+| vLLM | 0.1.dev1 (fork of `feature/turboquant-kv-cache`) |
+| OS | Ubuntu 24.04 |
+
+Single GPU. No tensor parallelism. AMD Developer Cloud droplet, $300 promotional credit.
+
+### 9.2 Implementation summary
+
+Branch: `feature/turboquant_plus` of `TheTom/vllm-turboquant` (https://github.com/TheTom/vllm-turboquant). Port consists of seven commits, all merged into the shipping branch.
+
+V3-specific files added under `vllm/v1/attention/triattention/`:
+
+| File | Purpose |
+|------|---------|
+| `engine.py` | `TriAttentionV3Engine`: calibration accumulators, per-layer score state, V3 selection trigger |
+| `policy.py` | V1 / V2 / V3 selection logic (prefix protect + per-segment quota + cleanup) |
+| `scoring.py`, `scoring_kernel.py` | PyTorch reference + Triton kernel for per-cell trig scoring |
+| `hooks.py` | Pre-RoPE Q-capture as a `vllm::triatt_capture_q_pre_rope` custom op |
+| `integration.py` | `install_triattention(model_path, cfg)` helper |
+| `backend_helpers.py` | Glue between the engine and the TurboQuant attention backend |
+
+Modifications to existing vLLM files:
+
+- **TQ decode kernel** (`triton_turboquant_decode.py`): added `VALID_MASK` constexpr to both single-Q and grouped (batched-Q) kernels. Evicted positions score `-inf` at attention time. Per-position uint8 mask `[B, max_seq_len]` plumbed through `TurboQuantMetadata`.
+- **TQ backend** (`turboquant_attn.py`): per-layer K accumulation hook in `_continuation_prefill` (after the existing dequant step), valid-mask plumbed to launcher, dispatch updated.
+- **Model files** (qwen2, qwen3, qwen3_moe, llama, mistral, gemma4, qwen3_next): one-line `capture_q_pre_rope(self._triatt_layer_idx, q)` insert before each model's `rotary_emb(...)` call. Layer index cached in `__init__`. No-op when V3 is disabled.
+
+Three vLLM-specific design choices that diverge from the llama.cpp implementation:
+
+1. **Q capture is a vLLM custom op.** vLLM compiles each model with `torch.compile(fullgraph=True)`. Dynamo refuses `torch.compiler.disable`'d callees in fullgraph mode. Solution: register the Q capture as a vLLM custom op via `direct_register_custom_op`, declared with `mutates_args=["q"]` to keep the graph capture from DCE'ing it (no tensor outputs, no real mutation, but the declaration prevents elimination).
+
+2. **Engine lives in the worker, not the main process.** vLLM V1 forks an `EngineCore` subprocess for model execution. Main-process state is invisible. `install_triattention(model_path, cfg)` (called BEFORE `LLM(...)`) exports model dims plus tuning knobs as `VLLM_TRIATT_*` env vars; the worker lazy-initialises its own engine on the first Q-capture call.
+
+3. **Eviction without compaction.** vLLM's KV cache is paged (16-token blocks). Per-token eviction inside a block is awkward. The port uses a uint8 `valid_mask[B, max_seq_len]` plumbed through attention metadata into the TQ decode kernel, which scores evicted positions as `-inf`. No physical data movement, no block-table changes.
+
+### 9.3 Models tested
+
+| Model | Size | Family | Result |
+|-------|------|--------|--------|
+| Qwen2.5-7B-Instruct | 7B dense | Qwen | PPL paper-exact reproduction (Section 9.4) |
+| Qwen3-8B | 8B dense | Qwen3 | full PPL + NIAH matrix at 8K/16K/32K |
+| Mistral-7B-Instruct-v0.3 | 7B dense | Llama-arch | cross-family transfer confirmed |
+| Qwen3-30B-A3B | 30B MoE (3B active) | Qwen3 MoE | 3 of 4 modes landed; stack-on-MoE flaky |
+| Mamba2-primed-HQwen3-8B | 8B hybrid | hybrid_qwen3 | blocked at transformers (model_type unknown) |
+| AI21-Jamba2-3B | 3B hybrid | jamba | algorithmically incompatible (no RoPE on attention layers) |
+| Qwen3-Next-80B-A3B-Instruct | 80B hybrid | qwen3_next | blocked at vLLM page-size unifier when stacking with TQ |
+
+KV cache preset for V3 paths: `turboquant_k8v4` (FP8 K + 4-bit V). Mirrors the K=q8_0 + V=turbo3 config from Section 4.6 in spirit (K stays dequant-able for the V3 score formula, V is more aggressively compressed). Pure-BF16 K is not supported on the V3 path because the V3 hooks live in the TurboQuant attention backend.
+
+### 9.4 Paper-exact reproduction on Qwen2.5-7B-Instruct
+
+Same model, same wikitext-2-raw protocol, 3 chunks, batch_size=512, 32K context. The paper's protocol numbers (Section 4.1) are reproduced under llama.cpp/Metal; this section reports the equivalent run under vLLM/ROCm-Triton.
+
+#### 9.4.1 PPL
+
+| Mode | KV preset | vLLM PPL | vLLM Δ | llama.cpp Δ (paper §4.1) |
+|------|-----------|---------:|-------:|-------------------------:|
+| baseline | auto (BF16 weights, BF16 KV) | 6.0615 | — | — (paper baseline 6.8504, Q8_0 weights) |
+| TQ alone | turboquant_4bit_nc_cv_rv | 6.0726 | +0.18% | +0.55% (Q8_0 K + turbo3 V) |
+| V3 alone | turboquant_k8v4 | 6.0822 | +0.34% | +0.006% |
+| TQ + V3 stack | turboquant_k8v4 + V3 | 6.0822 | +0.34% | +0.84% |
+
+Different baseline (BF16 weights vs Q8_0 weights) so absolute PPL is not directly comparable. The deltas all sit within the protocol's documented ±0.5% noise floor at 3 chunks.
+
+The vLLM V3-alone delta is slightly worse than the paper's. The vLLM TQ-alone and stack deltas are slightly better. None of the three differences is significant within the protocol noise.
+
+#### 9.4.2 KV cache compression
+
+Direct stack savings on Qwen2.5-7B (28 layers × 4 KV heads × 128 head_dim):
+
+| Mode | Bytes per token per layer (K+V combined) | Compression vs BF16 | Total KV @ 32K |
+|------|----------------------------------------:|--------------------:|---------------:|
+| baseline (BF16 KV) | 4096 B | 1.0× | 1.74 GB |
+| TQ alone (`turboquant_4bit_nc_cv_rv`) | 1064 B | 3.85× | 0.45 GB |
+| TQ K8V4 alone (FP8 K + 4-bit V) | 1536 B | 2.67× | 0.65 GB |
+| TQ K8V4 + V3 stack @ 90% retention | 1382 B effective | **2.96×** | **0.59 GB** |
+
+V3 at 90% retention contributes an extra ~11% compression on top of any TQ preset. The 2.96× total stack number lines up directly with the paper's Section 4.6 headline of "approximately 2.9× KV memory compression" for the TQ+V3 stack on Qwen2.5-7B.
+
+The TQ-alone `turboquant_4bit_nc_cv_rv` preset (4-bit MSE K + 4-bit centroid V) compresses harder than the V3-friendly `turboquant_k8v4` preset, but it doesn't expose K in a dequant-able form for V3 scoring. Stacking V3 on the harder TQ preset would require either dequanting K-from-MSE on the V3 path or moving V3 hooks off the TQ backend entirely. Open work item.
+
+#### 9.4.3 NIAH
+
+Same model, same character positions (400 / 65000 / 120000), same strict checker, same `--temp 0` greedy generation, `-n 64`.
+
+| Mode | Start (400) | Middle (65000) | End (120000) |
+|------|:-----------:|:--------------:|:------------:|
+| baseline | PARTIAL_NUMBER | PASS | PASS |
+| TQ alone | PARTIAL_NUMBER | PASS | PASS |
+| **V3 alone** | PARTIAL_NUMBER | **PARTIAL_NUMBER** | PASS |
+| **TQ + V3 stack** | PARTIAL_NUMBER | **PARTIAL_NUMBER** | PASS |
+
+Paper's Qwen2.5-7B + V3 result (paper §4.2): PASS / PASS / PASS at all three positions.
+
+This is a real regression vs the paper. Two distinct anomalies:
+
+1. **All four modes (including baseline) miss the start position with PARTIAL_NUMBER.** The model produces "7742" but not the phrase "PURPLE ELEPHANT". Since baseline also fails, this is independent of V3 — likely a checker / output-formatting interaction with the BF16-weight Qwen2.5 (the paper used Q8_0 weights, which can change generation behavior). Consistent with the paper's own §3.3 note that the strict checker has known case-sensitivity edge cases.
+
+2. **V3 and stack lose the middle position relative to baseline + TQ.** baseline + TQ both PASS at 65000; V3 + stack drop to PARTIAL_NUMBER. Same context length, same prompt, same needle. V3 changes which tokens are kept and that change degraded retrieval at the middle position on this model on this runtime. This is the regression.
+
+### 9.5 Where the vLLM port falls short of the paper
+
+The PPL story tracks paper within noise. The NIAH story does not. V3 in vLLM on Qwen2.5-7B at 32K is not delivering the paper's clean PASS-PASS-PASS, and that gap shows up at the middle position specifically — exactly the place V3 was designed to protect with the per-segment quota policy.
+
+Three plausible causes, in decreasing order of likelihood:
+
+1. **Different KV preset.** The paper used Q8_0 K + turbo3 V. The vLLM port uses FP8 K + 4-bit V (`turboquant_k8v4`). FP8 K is dtype-lossier than Q8_0 K. V3's score formula reads K from cache and computes the trig-aligned score on whatever K precision is stored. If the FP8 representation perturbs K vectors enough to flip eviction picks near the cutoff, mid-context tokens can get evicted that Q8_0-K would have kept.
+
+2. **Different scoring numerics.** llama.cpp uses 8-thread CPU split accumulators with 4-way per-thread fanout for vectorization. Reordered summation, ULP drift. vLLM does the trig score sum as a single fp32 torch reduction. For V3 selection near the score cutoff, summation order can flip which token gets evicted.
+
+3. **Different eviction trigger frequency.** Paper logged 18 eviction rounds for the 32K / 3-chunk run. The vLLM port logs 5. Fewer rounds means the cache spends more time at full state and each round evicts a larger batch of tokens at once. The per-segment quota assumes roughly uniform-sized rounds; aggressive batches may drop more mid-context tokens than the policy "wants" because the bucket targets are computed once per round.
+
+A retention sweep (95 / 90 / 85 / 80 / 75 / 65 / 50%) on Qwen2.5-7B should localise where the regression starts. If the gap is preset-driven (cause 1), running with a Q8_0-K-equivalent vLLM preset would close it. If it's numerics or trigger frequency, the gap stays. That ablation is the next step.
+
+PPL is not a sufficient signal for V3 quality (see §3.2 of the original paper, which makes the same point). The vLLM port confirms this empirically: PPL reproduces the paper within noise, NIAH does not.
+
+### 9.6 Hybrid models: still untested in vLLM
+
+Section 4.5 of the original paper documents that V3 NIAH fails at middle and end positions on hybrid Mamba+Attention architectures (Qwen3.5-class). The natural follow-up question is whether the same failure transfers to the vLLM port or whether the different scoring numerics fix it.
+
+Three hybrid model attempts; none ran to a result:
+
+1. **Mamba2-primed-HQwen3-8B (Amazon).** Model uses a `hybrid_qwen3` model_type that current transformers doesn't recognize, including the latest `transformers @ main` build. The model ships no custom modeling code in the repo. Cannot load, cannot test.
+
+2. **AI21-Jamba2-3B.** Loads in vLLM, but Jamba's attention layers use no RoPE — Mamba does positional encoding via the SSM recurrence and the attention layers are vanilla. V3's score formula is RoPE-derived (`omega[f] = 1 / theta^(2f/n_rot)`) and cannot apply to a model with no RoPE. Algorithmic incompatibility, not a port issue.
+
+3. **Qwen3-Next-80B-A3B-Instruct.** This is the right architecture class — `qwen3_next` (hybrid Mamba+Attn), `partial_rotary_factor=0.25` (the paper called partial RoPE out as the suspected failure cause), 16 attention heads, 2 KV heads, 256 head_dim, 48 layers. Loads in vLLM with BF16 KV. Loaded with TQ stacking, vLLM's KV cache page-size unifier rejects the configuration: the Mamba state size and the TQ-compressed KV slot size do not share a common block divisor. Hard error at engine init.
+
+The Qwen3-Next path is the one that should work with another round of effort. Two routes:
+
+- **(a)** Extend V3 hooks to vLLM's BF16 attention backend, so V3 can run without TQ stacking. The V3 engine already accepts any K precision for scoring (it casts to fp32 internally). The remaining work is plumbing the per-layer K-extraction call into the BF16 attention path. Estimated 1–3 days of focused vLLM-internals work.
+
+- **(b)** Patch vLLM's hybrid page-size unifier to handle two cache types (Mamba state + TQ-compressed KV). Deeper vLLM-internals change with risk of regressing other hybrid model paths.
+
+Neither was in the budget for this round. The honest result is: the hybrid V3 failure mode the paper documents is, as of this writing, architecturally inaccessible in the vLLM port. Not a refutation of the paper, not a confirmation. An open item for follow-up work.
+
+### 9.7 Headline claim envelope (vLLM port specifically)
+
+What I can claim, post-port:
+
+- V3 ports cleanly from llama.cpp/Metal to vLLM/ROCm-Triton on AMD MI300X with no architectural surprises. Algorithm transfers.
+- Paper-exact PPL on Qwen2.5-7B reproduces within ±0.5% noise floor.
+- Cross-family confirmed (Mistral-7B Llama-arch).
+- MoE works at the kernel level (Qwen3-30B-A3B baseline + V3-only).
+- NIAH PASS at start/middle/end on Qwen3-8B (different model than the paper used).
+
+What I cannot claim, post-port:
+
+- "Apples-to-apples paper reproduction." The paper-exact NIAH on Qwen2.5-7B *regresses* vs paper at the middle position. Real gap.
+- "Works where llama.cpp fails." The hybrid failure mode is architecturally inaccessible in the current vLLM port; we have no data to refute the paper's hybrid finding.
+- "Beats Apple Metal." PPL deltas all sit within the protocol noise floor; NIAH is *worse* on the apples-to-apples comparison.
+
+### 9.8 Open work
+
+In rough priority order:
+
+1. **Retention sweep on Qwen2.5-7B at 32K**: 95 / 90 / 85 / 80 / 75 / 65 / 50%. PPL + NIAH at each. Finds where V3 starts cliffing in the vLLM port. Maps the operating envelope properly.
+2. **KV-preset ablation on Qwen2.5-7B at 32K**: vary K precision (Q8_0-equivalent vs FP8) holding everything else constant. Tests cause 1 from §9.5.
+3. **Eviction-trigger frequency probe**: instrument the engine to log every trigger evaluation, compare against llama.cpp's tighter per-ubatch cadence. Tests cause 3 from §9.5.
+4. **Hybrid V3 unblock**: either path (a) BF16-K hook on vLLM's BF16 attention backend, or path (b) page-size unifier patch. Whichever path lands first opens the Qwen3-Next test.
+5. **MLA support for V3**: separate kernel-level project. Out of scope for this round; tracked for a future round.
+
+### 9.9 How to Run (vLLM Port)
+
+This section mirrors the paper's Section 6 but for the vLLM/ROCm-Triton path.
+
+#### 9.9.1 Pull the Branch
+
+```bash
+git clone https://github.com/TheTom/vllm-turboquant.git
+cd vllm-turboquant
+git checkout feature/turboquant_plus
+```
+
+The `feature/turboquant_plus` branch contains the full TurboQuant+ AMD work plus the V3 port. The standalone V3 branch (`feature/triattention-v3`) was deleted after merge; all V3 commits live on the shipping branch.
+
+#### 9.9.2 Build
+
+```bash
+# editable install
+pip install -e .
+
+# AITER for ROCm flash-attn varlen (not required on CUDA;
+# unblocks long-context prefill on AMD where upstream flash-attn
+# requires a 7-hour Composable Kernel build)
+pip install git+https://github.com/ROCm/aiter.git
+
+# unit tests for V3 engine math + selection policy
+pytest tests/v1/attention/test_triattention_v3.py -v
+```
+
+#### 9.9.3 Enable V3
+
+V3 is per-process. Two equivalent ways to enable:
+
+**Option A: helper call before LLM().** Resolves model dims via HF AutoConfig, exports them as env vars, sets the master `VLLM_TRIATT_ENABLED=1` switch.
+
+```python
+from vllm import LLM
+from vllm.v1.attention.triattention import (
+    TriAttentionV3Config, install_triattention,
+)
+
+install_triattention(
+    model_path="/path/to/Qwen2.5-7B-Instruct",
+    cfg=TriAttentionV3Config(budget=29491, prefix_protect=128),
+)
+llm = LLM(
+    model="/path/to/Qwen2.5-7B-Instruct",
+    kv_cache_dtype="turboquant_k8v4",
+    max_model_len=32768,
+)
+```
+
+The helper must run before `LLM(...)` so the EngineCore subprocess fork inherits the env vars.
+
+**Option B: env vars only.** Same effect, no Python helper needed:
+
+```bash
+VLLM_TRIATT_ENABLED=1 \
+VLLM_TRIATT_BUDGET=29491 \
+VLLM_TRIATT_PREFIX=128 \
+VLLM_TRIATT_WINDOW=128 \
+python my_script.py
+```
+
+#### 9.9.4 Tunable Knobs
+
+| Env var | Default | Meaning |
+|---------|--------:|---------|
+| `VLLM_TRIATT_ENABLED` | `0` | master switch (`"0"` / `"1"`) |
+| `VLLM_TRIATT_BUDGET` | `2048` | max live cells per sequence |
+| `VLLM_TRIATT_HYBRID` | `2` | selection mode: `0`=V1 paper-faithful, `1`=V2 quota only, `2`=V3 |
+| `VLLM_TRIATT_PREFIX` | `128` | protected prefix length (V3 only) |
+| `VLLM_TRIATT_WINDOW` | `128` | protected recent-window length |
+| `VLLM_TRIATT_SEGMENTS` | `8` | per-segment quota bucket count |
+| `VLLM_TRIATT_WARMUP` | `1024` | Q samples before calibration fires |
+| `VLLM_TRIATT_ADAPTIVE` | `0` | EMA-update calibration centers each round |
+
+#### 9.9.5 PPL Eval (paper-exact protocol)
+
+Reproduces the paper's Section 4.1 protocol on the vLLM/ROCm-Triton path.
+
+```bash
+# baseline (BF16 KV, no TQ, no V3)
+python3 scripts/triatt_v3_ppl.py \
+    --model /path/to/Qwen2.5-7B-Instruct \
+    --mode baseline \
+    --ctx 32768 --chunks 3 --gpu-mem 0.30
+
+# TQ alone (turboquant_4bit_nc_cv_rv, no V3)
+python3 scripts/triatt_v3_ppl.py --mode tq \
+    --model /path/to/Qwen2.5-7B-Instruct \
+    --ctx 32768 --chunks 3 --gpu-mem 0.30
+
+# V3 alone (TQ K8V4 + V3 eviction)
+python3 scripts/triatt_v3_ppl.py --mode v3 \
+    --model /path/to/Qwen2.5-7B-Instruct \
+    --ctx 32768 --chunks 3 --budget 29491 \
+    --prefix 128 --window 128 --warmup 1024 --gpu-mem 0.30
+
+# TQ + V3 stack
+python3 scripts/triatt_v3_ppl.py --mode stack \
+    --model /path/to/Qwen2.5-7B-Instruct \
+    --ctx 32768 --chunks 3 --budget 29491 \
+    --prefix 128 --window 128 --warmup 1024 --gpu-mem 0.30
+```
+
+The `--mode` flag selects the KV preset: `baseline`=auto BF16, `tq`=`turboquant_4bit_nc_cv_rv`, `v3` and `stack` both use `turboquant_k8v4` (FP8 K + 4-bit V; the V3-friendly preset).
+
+#### 9.9.6 NIAH Eval (paper-exact protocol)
+
+Reproduces the paper's Section 4.2 strict-checker NIAH protocol.
+
+```bash
+for mode in baseline tq v3 stack; do
+    python3 scripts/triatt_v3_niah.py \
+        --model /path/to/Qwen2.5-7B-Instruct \
+        --mode $mode \
+        --ctx 32768 \
+        --budget 29491 --prefix 128 --window 128 --gen 64 \
+        --gpu-mem 0.30
+done
+```
+
+Output is one line per (mode, position) tuple with the strict-checker verdict: `PASS` / `PARTIAL_WORD` / `PARTIAL_NUMBER` / `FAIL`.
+
+For reasoning models that emit a `<think>` block (Qwen3.5-class hybrids etc.) bump `--gen 1024` so the reasoning trace can complete before the strict checker reads the final answer. Same caveat the original paper's Section 3.3 documents.
+
+#### 9.9.7 Cross-vendor note
+
+The same scripts work on CUDA without modification. Skip the AITER install on CUDA (it's a ROCm-specific Triton FA build). All other paths (TurboQuant kernels, V3 engine, attention metadata plumbing) are platform-portable Triton.
+
+#### 9.9.8 Documentation pointers
+
+- Module README: `vllm/v1/attention/triattention/README.md`
+- Unit tests: `tests/v1/attention/test_triattention_v3.py`
+- TQ+ AMD-specific roadmap: see the V3-port-context paper at `vLLM AMD TurboQuant+ Improvements Roadmap`
