@@ -108,6 +108,85 @@ Recognised keys: ctk, ctv, attn_rot_k, attn_rot_v, attn_rot_disable.
 """
 
 
+_REFRACT_CACHE = Path.home() / ".cache" / "refract"
+_WIKITEXT_2_URL = "https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip"
+
+
+def _ensure_wikitext_2(cache_dir: Path = _REFRACT_CACHE,
+                       silent: bool = False) -> Path:
+    """Make sure wikitext-2-raw is downloaded + extracted under
+    ``cache_dir/wikitext-2-raw/``. Returns that directory.
+
+    Idempotent: re-running is a no-op when files already exist.
+
+    Network: ~10 MB single zip, ~30 s on a typical home connection.
+    No third-party deps; uses stdlib urllib + zipfile.
+    """
+    import urllib.request
+    import zipfile
+
+    target = cache_dir / "wikitext-2-raw"
+    test_p = target / "wiki.test.raw"
+    train_p = target / "wiki.train.raw"
+    if test_p.exists() and train_p.exists():
+        return target
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = cache_dir / "wikitext-2-raw-v1.zip"
+    if not silent:
+        print(f"Downloading wikitext-2-raw (~10MB) → {target} ...")
+    urllib.request.urlretrieve(_WIKITEXT_2_URL, zip_path)
+    if not silent:
+        print("Unzipping ...")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(cache_dir)
+    try:
+        zip_path.unlink()
+    except OSError:
+        pass
+    if not test_p.exists() or not train_p.exists():
+        raise RuntimeError(
+            f"Wikitext-2 unzip didn't produce expected files at {target}. "
+            f"Inspect {cache_dir} or fetch manually."
+        )
+    if not silent:
+        print(f"✓ Cached at {target}")
+    return target
+
+
+def _resolve_default_paths(args, *, need_corpus: bool, need_haystack: bool):
+    """Auto-resolve --corpus and --rniah-haystack from the wikitext-2 cache.
+
+    If the cache is missing AND ``--no-auto-fetch`` is NOT set, this
+    triggers a one-time wikitext-2 download. With ``--no-auto-fetch``,
+    raises with a clear remediation message.
+    """
+    if not (need_corpus or need_haystack):
+        return
+    have_corpus = bool(getattr(args, "corpus", None))
+    have_haystack = bool(getattr(args, "rniah_haystack", None))
+    if (need_corpus and have_corpus) and (not need_haystack or have_haystack):
+        return
+    no_fetch = bool(getattr(args, "no_auto_fetch", False))
+    target = _REFRACT_CACHE / "wikitext-2-raw"
+    have_cache = (target / "wiki.test.raw").exists() and (target / "wiki.train.raw").exists()
+    if not have_cache:
+        if no_fetch:
+            raise SystemExit(
+                "Missing --corpus (and/or --rniah-haystack) and "
+                "--no-auto-fetch was passed. Either pass paths explicitly "
+                "or drop --no-auto-fetch to let REFRACT download "
+                "wikitext-2-raw to ~/.cache/refract/ (~10MB)."
+            )
+        _ensure_wikitext_2()
+    if need_corpus and not have_corpus:
+        args.corpus = target / "wiki.test.raw"
+        print(f"  using cached corpus  : {args.corpus}")
+    if need_haystack and not have_haystack:
+        args.rniah_haystack = target / "wiki.train.raw"
+        print(f"  using cached haystack: {args.rniah_haystack}")
+
+
 def _add_score_parser(sub):
     import argparse as _ap
     p = sub.add_parser(
@@ -125,9 +204,15 @@ def _add_score_parser(sub):
                    help="Candidate KV config to score.")
     p.add_argument("--prompts", required=True, type=Path,
                    help="Path to JSONL prompts file (e.g. prompts/v0.1.jsonl).")
-    p.add_argument("--corpus", required=True, type=Path,
-                   help="Path to plain-text corpus for KLD axis "
-                        "(e.g. wiki.test.raw).")
+    p.add_argument("--corpus", type=Path, default=None,
+                   help="Path to plain-text corpus for KLD axis. "
+                        "If omitted, REFRACT auto-downloads wikitext-2-raw "
+                        "(~10MB) to ~/.cache/refract/ and uses wiki.test.raw. "
+                        "Pass --no-auto-fetch to require an explicit path.")
+    p.add_argument("--no-auto-fetch", action="store_true",
+                   help="Disable auto-download of wikitext-2-raw. Requires "
+                        "--corpus and --rniah-haystack to be passed "
+                        "explicitly.")
     p.add_argument("--chunks", type=int, default=32,
                    help="--chunks for llama-perplexity (default: 32).")
     p.add_argument("-c", "--ctx", type=int, default=512,
@@ -214,6 +299,14 @@ def _run_score(args) -> int:
     if args.full:
         args.axis_rniah = True
         args.axis_plad = True
+
+    # v0.3.2: auto-resolve corpus + haystack from ~/.cache/refract/ when
+    # the user didn't pass them. Triggers a one-time wikitext-2-raw fetch
+    # if the cache is empty and --no-auto-fetch isn't set.
+    _resolve_default_paths(
+        args, need_corpus=not args.skip_kld,
+        need_haystack=args.axis_rniah,
+    )
 
     # Cost hint up front so the user knows what they're committing to.
     cost_axes = ["A (~2 min)", "B (~5 min)"]
@@ -665,6 +758,34 @@ def _run_compare(args) -> int:
     return 0
 
 
+def _add_fetch_parser(sub):
+    p = sub.add_parser(
+        "fetch",
+        help="Download wikitext-2-raw corpus + haystack to ~/.cache/refract/.",
+        description=(
+            "Pre-fetch the wikitext-2-raw corpus (10MB zip → wiki.test.raw "
+            "+ wiki.train.raw) into ~/.cache/refract/. Subsequent score / "
+            "repeatability invocations will auto-find these files when "
+            "--corpus / --rniah-haystack are omitted.\n\n"
+            "Idempotent: re-running with the cache already populated is a "
+            "no-op. Skips any download if files already exist."
+        ),
+    )
+    p.add_argument("--cache-dir", type=Path, default=_REFRACT_CACHE,
+                   help=f"Override cache location (default: {_REFRACT_CACHE}).")
+    return p
+
+
+def _run_fetch(args) -> int:
+    target = _ensure_wikitext_2(cache_dir=args.cache_dir)
+    print()
+    print(f"  test  : {target / 'wiki.test.raw'}")
+    print(f"  train : {target / 'wiki.train.raw'}")
+    print()
+    print("`refract score` will auto-find these when --corpus / --rniah-haystack are omitted.")
+    return 0
+
+
 def _add_repeatability_parser(sub):
     p = sub.add_parser(
         "repeatability",
@@ -819,6 +940,7 @@ def main(argv=None) -> int:
     _add_selftest_parser(sub)
     _add_compare_parser(sub)
     _add_repeatability_parser(sub)
+    _add_fetch_parser(sub)
     args = parser.parse_args(argv)
     if args.cmd == "score":
         return _run_score(args)
@@ -828,6 +950,8 @@ def main(argv=None) -> int:
         return _run_compare(args)
     if args.cmd == "repeatability":
         return _run_repeatability(args)
+    if args.cmd == "fetch":
+        return _run_fetch(args)
     parser.error(f"unknown subcommand: {args.cmd}")
     return 1
 

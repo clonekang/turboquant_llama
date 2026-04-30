@@ -58,12 +58,16 @@ You need at minimum:
       check the source for plug-in pointers.
   - A model in the right format for your backend (.gguf for llama.cpp;
     a directory with `config.json + model.safetensors` for mlx).
-  - A natural-text corpus for KLD@D (wikitext-2's `wiki.test.raw` is
-    the standard). Get it from
-    [llama.cpp's wikitext download](https://github.com/ggerganov/llama.cpp/tree/master/scripts).
-  - The prompts JSONL (ships at `refract/prompts/v0.1.jsonl`).
-  - For R-NIAH (full mode): a long-text haystack file (wikitext-2's
-    `wiki.train.raw` works for cells up to 16K tokens).
+  - **Corpus + haystack: automatic.** REFRACT auto-downloads
+    wikitext-2-raw (~10MB) to `~/.cache/refract/` on first run and uses
+    `wiki.test.raw` for KLD + `wiki.train.raw` for R-NIAH unless you
+    pass paths explicitly. Pre-fetch with:
+    ```
+    python3 -m refract.cli fetch
+    ```
+    Disable auto-download with `--no-auto-fetch` if you want to require
+    explicit paths (CI-friendly).
+  - The prompts JSONL ships at `refract/prompts/v0.1.jsonl`.
 
 ## Step 0 — preflight (~30 seconds)
 
@@ -93,17 +97,18 @@ python3 -m refract.cli score \
     --model /path/to/model.gguf \
     --candidate "ctk=q8_0,ctv=q8_0" \
     --prompts refract/prompts/v0.1.jsonl \
-    --corpus /path/to/wiki.test.raw \
-    --json-out my-first-report.json
+    --json-out my-first-report.json \
+    --html-out my-first-report.html
 ```
 
-This runs Trajectory + KLD@D — the two cheap axes. You'll get a
-composite score and a band (EXCELLENT/PASS/DEGRADED/FAIL) plus a
+`--corpus` is auto-resolved from `~/.cache/refract/` (downloaded on
+first run). This runs Trajectory + KLD@D — the two cheap axes. You'll
+get a composite score, a band (EXCELLENT/PASS/DEGRADED/FAIL), and a
 plain-English diagnosis of what the per-axis pattern means.
 
 ## Step 2 — full audit (25–30 min on a 7B Q8)
 
-Add `--full` plus the R-NIAH haystack flag:
+Add `--full`. The haystack file is also auto-resolved from the cache.
 
 ```
 python3 -m refract.cli score \
