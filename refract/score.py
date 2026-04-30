@@ -51,14 +51,112 @@ def band(score: float) -> str:
     return "FAIL"
 
 
+def interpret_pattern(
+    *,
+    gtm_score: float,
+    kld_score: float,
+    rniah_score: Optional[float] = None,
+    plad_score: Optional[float] = None,
+) -> list[str]:
+    """v0.2.0: turn the per-axis band pattern into plain-English diagnosis.
+
+    Returns 0-3 short sentences a non-techie reader can act on. Each sentence
+    names what's broken (in user terms, not "axis A score") and suggests a
+    direction. Does not duplicate the band labels — rendering callers should
+    print bands AND interpretation; the bands say "what" and the
+    interpretation says "what it means".
+
+    Pattern recognised:
+      - all axes ≥ 80 (PASS or above)            → "all clear"
+      - short-context drift (A or B < 80)        → "decode distribution shift"
+      - long-context drift (C < 80)              → "retrieval at long context"
+      - brittleness (D < 80)                     → "perturbation brittleness"
+      - all axes < 60 (FAIL)                     → "catastrophic"
+    Multiple patterns can fire; sentences are emitted in order of severity.
+    """
+    notes: list[str] = []
+
+    def low(s: Optional[float]) -> bool:
+        return s is not None and s < 80.0
+
+    def fail(s: Optional[float]) -> bool:
+        return s is not None and s < 60.0
+
+    short_drift = low(gtm_score) or low(kld_score)
+    long_drift = low(rniah_score)
+    brittle = low(plad_score)
+
+    # Catastrophic case first: every measured axis below FAIL.
+    measured = [s for s in (gtm_score, kld_score, rniah_score, plad_score)
+                if s is not None]
+    if measured and all(s < 60.0 for s in measured):
+        notes.append(
+            "Catastrophic: every measured surface is broken. Treat as a "
+            "non-functional quantization; revert to a higher-bit config."
+        )
+        return notes
+
+    if not (short_drift or long_drift or brittle):
+        notes.append(
+            "All axes intact. Quantization is faithful to the fp16 reference "
+            "across the surfaces tested."
+        )
+        return notes
+
+    if short_drift and not long_drift and not brittle:
+        if fail(gtm_score) and fail(kld_score):
+            notes.append(
+                "Per-token distribution is broken but high-level surfaces "
+                "(retrieval, robustness) are intact. The model decodes "
+                "materially different tokens than fp16; consider a higher-bit "
+                "V-cache or a non-rotating V scheme."
+            )
+        else:
+            notes.append(
+                "Mild short-context drift; long-context retrieval and "
+                "perturbation robustness are intact. Likely safe for typical "
+                "use; audit on your specific decoding workload before shipping."
+            )
+        return notes
+
+    # Mixed cases: name each axis that's affected.
+    if short_drift:
+        notes.append(
+            "Decode distribution drift detected: the candidate generates "
+            "different tokens than fp16 on short-context prompts."
+        )
+    if long_drift:
+        notes.append(
+            "Long-context retrieval degraded: candidate fails on prompts "
+            "where the fp16 reference still retrieves correctly. Inspect the "
+            "per-(length, position) cell breakdown to see where it breaks."
+        )
+    if brittle:
+        notes.append(
+            "Brittleness to small input changes: candidate's output drifts "
+            "more than fp16's under typo / casing / punctuation perturbations."
+        )
+    return notes
+
+
 @dataclass
 class CompositeScore:
-    """REFRACT v0.1 composite output."""
+    """REFRACT composite output.
 
-    composite: float                 # 0–100 (harmonic_mean of axis scores)
+    v0.1 shipped two axes (gtm + kld); v0.2 adds rniah + plad as
+    optional axes. The composite is the harmonic mean of *all axes
+    actually scored* — None values are dropped before aggregation, so
+    a v0.1-style two-axis run still produces the same number it did
+    before. Per-axis scores are kept as separate fields so the report
+    layer can render bands per axis even when not all axes are run.
+    """
+
+    composite: float                 # 0–100 (harmonic_mean of scored axes)
     band: str                        # EXCELLENT / PASS / DEGRADED / FAIL
-    gtm_score: float                 # 0–100
-    kld_score: float                 # 0–100
+    gtm_score: float                 # 0–100 (axis A: gtm or trajectory)
+    kld_score: float                 # 0–100 (axis B)
+    rniah_score: Optional[float] = None  # 0–100 (axis C; v0.2)
+    plad_score: Optional[float] = None   # 0–100 (axis D; v0.2)
     floor_score: Optional[float] = None  # measured floor (ref vs ref)
     floor_ok: Optional[bool] = None
     floor_min: float = MIN_FLOOR
@@ -68,10 +166,23 @@ class CompositeScore:
 def composite_score(
     gtm_score: float,
     kld_score: float,
+    rniah_score: Optional[float] = None,
+    plad_score: Optional[float] = None,
     floor_score: Optional[float] = None,
 ) -> CompositeScore:
-    """Combine GTM and KLD into the REFRACT v0.1 composite."""
-    composite = harmonic_mean([gtm_score, kld_score])
+    """Combine the per-axis scores into a REFRACT composite.
+
+    Axes that weren't run (passed as ``None``) are dropped before
+    aggregation. v0.1 callers passing only gtm + kld get a 2-axis
+    harmonic mean (unchanged behaviour); v0.2 callers passing all four
+    get a 4-axis harmonic mean.
+    """
+    axes = [gtm_score, kld_score]
+    if rniah_score is not None:
+        axes.append(rniah_score)
+    if plad_score is not None:
+        axes.append(plad_score)
+    composite = harmonic_mean(axes)
     floor_ok: Optional[bool] = None
     notes: list[str] = []
     if floor_score is not None:
@@ -86,6 +197,8 @@ def composite_score(
         band=band(composite),
         gtm_score=gtm_score,
         kld_score=kld_score,
+        rniah_score=rniah_score,
+        plad_score=plad_score,
         floor_score=floor_score,
         floor_ok=floor_ok,
         notes=notes,

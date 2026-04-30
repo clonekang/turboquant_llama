@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REFRACT report — gemma-4-26B-A4B-it-Q8_0.gguf</title>
+<style>
+* { box-sizing: border-box; }
+body {
+    font: 14px/1.5 system-ui, -apple-system, "SF Pro Text", sans-serif;
+    background: #f7f7f8;
+    color: #222;
+    margin: 0;
+    padding: 24px;
+}
+.report {
+    max-width: 920px;
+    margin: 0 auto;
+    background: white;
+    padding: 32px;
+    border-radius: 12px;
+    box-shadow: 0 2px 16px rgba(0,0,0,.06);
+}
+header { border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 20px; }
+header h1 { margin: 0 0 4px 0; font-size: 22px; }
+header .subtitle { color: #666; font-size: 12px; }
+section { margin: 20px 0; }
+section h2 { margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase;
+             letter-spacing: 0.05em; color: #666; }
+.composite-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    background: #fafafa;
+    border-radius: 8px;
+    border-left: 6px solid var(--band-color, #888);
+}
+.composite-number { font-size: 48px; font-weight: 700; line-height: 1; }
+.composite-band { font-size: 16px; font-weight: 600; letter-spacing: 0.05em; }
+.composite-summary { color: #555; }
+.bar { width: 100%; height: 12px; background: #eaeaea; border-radius: 6px;
+       overflow: hidden; }
+.bar .fill { height: 100%; }
+.diagnosis {
+    background: #fff8e6;
+    border-left: 4px solid #d49327;
+    padding: 12px 16px;
+    border-radius: 4px;
+}
+.diagnosis ul { margin: 0; padding-left: 20px; }
+.diagnosis li { margin: 4px 0; }
+.axis {
+    margin: 12px 0;
+    padding: 12px;
+    background: #fafafa;
+    border-radius: 6px;
+}
+.axis-head {
+    display: flex; gap: 16px; align-items: baseline; margin-bottom: 6px;
+}
+.axis-label { flex: 1; font-weight: 600; }
+.axis-score { font-size: 18px; font-weight: 700; }
+.axis-band { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; min-width: 70px; }
+.axis-prose { font-size: 12px; color: #666; margin-top: 6px; }
+.subblock { margin: 16px 0 0; }
+.subhead { font-size: 12px; color: #666; margin-bottom: 6px; font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+table th, table td { padding: 6px 8px; text-align: left; }
+table.rniah-grid th, table.rniah-grid td { border: 1px solid #e0e0e0; text-align: center; }
+table.rniah-grid .cell { color: white; font-weight: 600; }
+table.rniah-grid .cell.empty { background: #eee; color: #999; }
+table.plad-grid th { color: #666; font-weight: 500; font-size: 12px; }
+.skipped { color: #999; font-style: italic; }
+.details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+.details-card {
+    background: #fafafa;
+    border-radius: 6px;
+    padding: 12px 16px;
+}
+.details-card h3 {
+    margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #666;
+}
+.details-card table th { color: #888; font-weight: 500; font-size: 12px; min-width: 80px; }
+.details-card table td { font-family: ui-monospace, "SF Mono", monospace; font-size: 12px; }
+.repro {
+    background: #1e1e1e;
+    color: #f0f0f0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font: 12px ui-monospace, "SF Mono", monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+details { margin-top: 16px; }
+details summary { cursor: pointer; color: #555; font-weight: 600; padding: 6px 0; }
+details pre {
+    background: #1e1e1e;
+    color: #f0f0f0;
+    padding: 12px;
+    border-radius: 6px;
+    overflow: auto;
+    font: 11px ui-monospace, monospace;
+    max-height: 400px;
+}
+@media (max-width: 600px) {
+    body { padding: 12px; }
+    .report { padding: 20px; }
+    .composite-card { flex-direction: column; align-items: flex-start; }
+    .composite-number { font-size: 36px; }
+}
+
+.composite-card { --band-color: #cc3232; }
+</style>
+</head>
+<body>
+<div class="report">
+  <header>
+    <h1>REFRACT v0.3.1 — gemma-4-26B-A4B-it-Q8_0.gguf</h1>
+    <div class="subtitle">Higher is better. Score range 0–100. Generated 2026-04-30T15:03:21.</div>
+  </header>
+
+  <section>
+    <h2>REFRACT score</h2>
+    <div class="composite-card">
+      <div class="composite-number">29.12</div>
+      <div style="flex:1;">
+        <div class="composite-band" style="color:#cc3232;">FAIL</div>
+        <div class="bar" role="progressbar" aria-valuenow="29.1"><div class="fill" style="width:29.1%; background:#cc3232;"></div></div>
+        <div class="composite-summary">Material quality loss. Treat as broken.</div>
+      </div>
+    </div>
+  </section>
+
+  <section><h2>Diagnosis</h2><div class="diagnosis"><ul><li>Decode distribution drift detected: the candidate generates different tokens than fp16 on short-context prompts.</li><li>Brittleness to small input changes: candidate&#x27;s output drifts more than fp16&#x27;s under typo / casing / punctuation perturbations.</li></ul></div></section>
+
+  <section>
+    <h2>Per-axis breakdown</h2>
+    <div class="axis">  <div class="axis-head">    <span class="axis-label">Axis A — GTM</span>    <span class="axis-score">17.32</span>    <span class="axis-band" style="color:#cc3232;">FAIL</span>  </div>  <div class="bar" role="progressbar" aria-valuenow="17.3"><div class="fill" style="width:17.3%; background:#cc3232;"></div></div>  <div class="axis-prose">Token-level agreement with the fp16 reference (greedy decode).</div>  </div><div class="axis">  <div class="axis-head">    <span class="axis-label">Axis B — KLD@D</span>    <span class="axis-score">17.59</span>    <span class="axis-band" style="color:#cc3232;">FAIL</span>  </div>  <div class="bar" role="progressbar" aria-valuenow="17.6"><div class="fill" style="width:17.6%; background:#cc3232;"></div></div>  <div class="axis-prose">Distribution-level divergence from the fp16 reference (corpus KLD).</div>  </div><div class="axis">  <div class="axis-head">    <span class="axis-label">Axis C — R-NIAH</span>    <span class="axis-score">100.00</span>    <span class="axis-band" style="color:#2d8c2d;">EXCELLENT</span>  </div>  <div class="bar" role="progressbar" aria-valuenow="100.0"><div class="fill" style="width:100.0%; background:#2d8c2d;"></div></div>  <div class="axis-prose">Long-context retrieval quality vs the reference (NIAH at multiple lengths).</div>  <div class="subblock"><div class="subhead">R-NIAH per-cell (base / cand) — green=match, red=degraded, gray=base also fails</div><table class="rniah-grid"><thead><tr><th>length\pos</th><th>0.10</th><th>0.50</th><th>0.90</th></tr></thead><tbody><tr><th>4096</th><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td></tr><tr><th>8192</th><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td><td class="cell" style="background:#2d8c2d;" title="candidate matches base">1.00/1.00</td></tr><tr><th>16384</th><td class="cell" style="background:#eeeeee;" title="base also fails — uninformative">0.00/0.00</td><td class="cell" style="background:#eeeeee;" title="base also fails — uninformative">0.00/0.00</td><td class="cell" style="background:#eeeeee;" title="base also fails — uninformative">0.00/0.00</td></tr></tbody></table></div></div><div class="axis">  <div class="axis-head">    <span class="axis-label">Axis D — PLAD</span>    <span class="axis-score">78.40</span>    <span class="axis-band" style="color:#d49327;">DEGRADED</span>  </div>  <div class="bar" role="progressbar" aria-valuenow="78.4"><div class="fill" style="width:78.4%; background:#d49327;"></div></div>  <div class="axis-prose">Robustness to small prompt changes vs the reference (typo/case/punct/paraphrase).</div>  <div class="subblock"><div class="subhead">PLAD per-perturbation</div><table class="plad-grid"><thead><tr><th>perturbation</th><th>score</th><th>band</th><th></th></tr></thead><tbody><tr><td>typo</td><td>83.66</td><td><span class="axis-band" style="color:#3aa05a;">PASS</span></td><td><div class="bar" role="progressbar" aria-valuenow="83.7"><div class="fill" style="width:83.7%; background:#3aa05a;"></div></div></td></tr><tr><td>case</td><td>68.77</td><td><span class="axis-band" style="color:#d49327;">DEGRADED</span></td><td><div class="bar" role="progressbar" aria-valuenow="68.8"><div class="fill" style="width:68.8%; background:#d49327;"></div></div></td></tr><tr><td>punct</td><td>81.84</td><td><span class="axis-band" style="color:#3aa05a;">PASS</span></td><td><div class="bar" role="progressbar" aria-valuenow="81.8"><div class="fill" style="width:81.8%; background:#3aa05a;"></div></div></td></tr><tr><td>paraphrase</td><td><span class="skipped">skipped</span></td><td>—</td><td>perturbation didn't apply on these prompts</td></tr></tbody></table></div></div>
+  </section>
+
+  <section>
+    <h2>Run details</h2>
+    <div class="details-grid">  <div class="details-card">    <h3>Model</h3>    <table><tr><th>name</th><td>gemma-4-26B-A4B-it-Q8_0.gguf</td></tr><tr><th>size gb</th><td>26.86 GB</td></tr><tr><th>format</th><td>gguf</td></tr></table>  </div>  <div class="details-card">    <h3>Hardware</h3>    <table><tr><th>chip</th><td>Apple M5 Max</td></tr><tr><th>platform</th><td>macOS-26.4.1-arm64-arm-64bit-Mach-O</td></tr><tr><th>ram gb</th><td>137.4 GB</td></tr><tr><th>machine</th><td>arm64</td></tr><tr><th>python</th><td>3.14.4</td></tr></table>  </div>  <div class="details-card">    <h3>Environment</h3>    <table><tr><th>reference</th><td>ctk=f16,ctv=f16</td></tr><tr><th>candidate</th><td>ctk=q8_0,ctv=turbo4</td></tr></table>  </div></div>
+  </section>
+
+  <section>
+    <h2>Reproduce</h2>
+    <pre class="repro">/tmp/render_example_html.py</pre>
+  </section>
+
+  <details>
+    <summary>Raw JSON (machine-readable)</summary>
+    <pre>{
+  &quot;schema&quot;: &quot;refract.report.v0.3.1&quot;,
+  &quot;framework_version&quot;: &quot;0.3.1&quot;,
+  &quot;environment&quot;: {},
+  &quot;timestamp&quot;: &quot;2026-04-30T15:03:21&quot;,
+  &quot;score_direction&quot;: &quot;higher_is_better&quot;,
+  &quot;score_range&quot;: [
+    0,
+    100
+  ],
+  &quot;model&quot;: &quot;/Users/tom/models/gemma-4-26B-A4B-it-Q8_0.gguf&quot;,
+  &quot;reference&quot;: &quot;ctk=f16,ctv=f16&quot;,
+  &quot;candidate&quot;: &quot;ctk=q8_0,ctv=turbo4&quot;,
+  &quot;composite&quot;: 29.119378931499842,
+  &quot;band&quot;: &quot;FAIL&quot;,
+  &quot;summary&quot;: &quot;Material quality loss. Treat as broken.&quot;,
+  &quot;diagnosis&quot;: [
+    &quot;Decode distribution drift detected: the candidate generates different tokens than fp16 on short-context prompts.&quot;,
+    &quot;Brittleness to small input changes: candidate&#x27;s output drifts more than fp16&#x27;s under typo / casing / punctuation perturbations.&quot;
+  ],
+  &quot;composite_detail&quot;: {
+    &quot;gtm_score&quot;: 17.31690622861054,
+    &quot;kld_score&quot;: 17.585948209856365,
+    &quot;rniah_score&quot;: 100.0,
+    &quot;plad_score&quot;: 78.40093473438733,
+    &quot;floor_score&quot;: null,
+    &quot;floor_ok&quot;: null,
+    &quot;floor_min&quot;: 99.5,
+    &quot;notes&quot;: []
+  },
+  &quot;axes&quot;: {
+    &quot;gtm&quot;: {
+      &quot;score&quot;: 17.31690622861054,
+      &quot;full_match_rate&quot;: 0.1,
+      &quot;median_first_divergence&quot;: 2,
+      &quot;mean_prefix_agreement_length&quot;: 8.433333333333334,
+      &quot;mean_cand_length&quot;: 48.7,
+      &quot;mean_ref_length&quot;: 49.63333333333333,
+      &quot;n_prompts&quot;: 30,
+      &quot;n_tokens_each&quot;: 50,
+      &quot;per_prompt&quot;: [],
+      &quot;notes&quot;: [],
+      &quot;band&quot;: &quot;FAIL&quot;,
+      &quot;description&quot;: &quot;Token-level agreement with the fp16 reference.&quot;
+    },
+    &quot;kld&quot;: {
+      &quot;score&quot;: 17.585948209856365,
+      &quot;mean_kld&quot;: 1.73807,
+      &quot;ppl&quot;: null,
+      &quot;rms_dp_pct&quot;: null,
+      &quot;same_topp_pct&quot;: null,
+      &quot;base_path&quot;: &quot;&quot;,
+      &quot;chunks&quot;: 32,
+      &quot;ctx&quot;: 512,
+      &quot;is_self_reference&quot;: false,
+      &quot;corpus&quot;: null,
+      &quot;band&quot;: &quot;FAIL&quot;,
+      &quot;description&quot;: &quot;Distribution-level divergence from the fp16 reference.&quot;
+    },
+    &quot;rniah&quot;: {
+      &quot;score&quot;: 100.0,
+      &quot;n_cells&quot;: 9,
+      &quot;cells&quot;: [
+        {
+          &quot;length&quot;: 4096,
+          &quot;position&quot;: 0.1,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 4096,
+          &quot;position&quot;: 0.5,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 4096,
+          &quot;position&quot;: 0.9,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 8192,
+          &quot;position&quot;: 0.1,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 8192,
+          &quot;position&quot;: 0.5,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 8192,
+          &quot;position&quot;: 0.9,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 1.0,
+          &quot;cand_acc&quot;: 1.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 1,
+          &quot;cand_hits&quot;: 1
+        },
+        {
+          &quot;length&quot;: 16384,
+          &quot;position&quot;: 0.1,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 0.0,
+          &quot;cand_acc&quot;: 0.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 0,
+          &quot;cand_hits&quot;: 0
+        },
+        {
+          &quot;length&quot;: 16384,
+          &quot;position&quot;: 0.5,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 0.0,
+          &quot;cand_acc&quot;: 0.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 0,
+          &quot;cand_hits&quot;: 0
+        },
+        {
+          &quot;length&quot;: 16384,
+          &quot;position&quot;: 0.9,
+          &quot;n_trials&quot;: 1,
+          &quot;base_acc&quot;: 0.0,
+          &quot;cand_acc&quot;: 0.0,
+          &quot;degradation&quot;: 0.0,
+          &quot;base_hits&quot;: 0,
+          &quot;cand_hits&quot;: 0
+        }
+      ],
+      &quot;skipped_cells&quot;: [],
+      &quot;needle&quot;: &quot;Note: APRICOT-7-BLUE is the rare paint color featured in this article.&quot;,
+      &quot;password_keyword&quot;: &quot;APRICOT-7-BLUE&quot;,
+      &quot;notes&quot;: [],
+      &quot;confidence&quot;: &quot;ok&quot;,
+      &quot;base_acc_avg&quot;: 0.6666666666666666,
+      &quot;band&quot;: &quot;EXCELLENT&quot;,
+      &quot;description&quot;: &quot;Long-context retrieval quality vs the reference.&quot;
+    },
+    &quot;plad&quot;: {
+      &quot;score&quot;: 78.40093473438733,
+      &quot;per_perturbation_score&quot;: {
+        &quot;typo&quot;: 83.66015410668061,
+        &quot;case&quot;: 68.766446516516,
+        &quot;punct&quot;: 81.84221977573544,
+        &quot;paraphrase&quot;: NaN
+      },
+      &quot;per_prompt&quot;: [],
+      &quot;n_prompts&quot;: 30,
+      &quot;n_perturbations&quot;: 4,
+      &quot;notes&quot;: [
+        &quot;36 (prompt, perturbation) pairs were skipped (perturbation could not apply, e.g. no \u22654-char word for typo).&quot;
+      ],
+      &quot;skipped_perturbations&quot;: [
+        &quot;paraphrase&quot;
+      ],
+      &quot;confidence&quot;: &quot;partial&quot;,
+      &quot;band&quot;: &quot;DEGRADED&quot;,
+      &quot;description&quot;: &quot;Robustness to small prompt changes vs the reference.&quot;
+    }
+  },
+  &quot;extras&quot;: {}
+}</pre>
+  </details>
+</div>
+</body>
+</html>

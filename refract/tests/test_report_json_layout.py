@@ -78,6 +78,59 @@ def test_axes_block_present():
     assert rep["axes"]["gtm"]["mean_ref_length"] == 48.0
 
 
-def test_schema_is_v0_1_3():
+def test_schema_is_v0_3_1():
     rep = _build_minimal_report()
-    assert rep["schema"] == "refract.report.v0.1.3"
+    assert rep["schema"] == "refract.report.v0.3.1"
+
+
+def test_framework_version_present():
+    rep = _build_minimal_report()
+    assert "framework_version" in rep
+    assert isinstance(rep["framework_version"], str)
+
+
+def test_environment_block_present():
+    rep = _build_minimal_report()
+    assert "environment" in rep
+    assert isinstance(rep["environment"], dict)
+
+
+# v0.1.4 additions: layman summary + per-axis bands/descriptions.
+
+
+def test_summary_is_layman_string():
+    """v0.1.4: top-level 'summary' field carries a one-line plain-English
+    interpretation of the score band so non-techie consumers can read the
+    report without grepping the paper."""
+    rep = _build_minimal_report()
+    assert isinstance(rep.get("summary"), str)
+    assert rep["summary"]  # non-empty
+    # The summary's content reflects the band; pin a substring of each band
+    # so the prose can be edited but the contract holds.
+    band_to_substr = {
+        "EXCELLENT": "Indistinguishable",
+        "PASS":      "Minor drift",
+        "DEGRADED":  "Audit",
+        "FAIL":      "broken",
+    }
+    expected = band_to_substr[rep["band"]]
+    assert expected.lower() in rep["summary"].lower(), (
+        f"summary {rep['summary']!r} does not match band {rep['band']!r}"
+    )
+
+
+def test_axes_carry_per_axis_band():
+    """v0.1.4: each axis block carries its own band, not just the
+    composite. Lets the layman see which axis caused a DEGRADED."""
+    rep = _build_minimal_report()
+    assert rep["axes"]["gtm"]["band"] in {"EXCELLENT", "PASS", "DEGRADED", "FAIL"}
+    assert rep["axes"]["kld"]["band"] in {"EXCELLENT", "PASS", "DEGRADED", "FAIL"}
+
+
+def test_axes_carry_description():
+    """v0.1.4: each axis block has a one-line 'description' so a layman
+    knows what 'KLD: DEGRADED' actually means without the paper."""
+    rep = _build_minimal_report()
+    for ax in ("gtm", "kld"):
+        d = rep["axes"][ax].get("description")
+        assert isinstance(d, str) and d, f"missing description on axis {ax}"

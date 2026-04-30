@@ -1,216 +1,180 @@
-# REFRACT v0.1.3
+# REFRACT v0.3.2
+
+> **⚠️ ALPHA — for initial testing and feedback.**
+> Setup is manual; proper packaging (PyPI, bundled corpus/prompts,
+> a `setup.sh` for the llama.cpp build) is coming. Run via
+> `python3 -m refract.cli` for now. See
+> [QUICKSTART.md](QUICKSTART.md) for the 0-to-first-PASS path.
 
 **REF**erence-anchored **R**obust **A**cid-test for **C**ompressed **T**ransformers.
 
+## Where do I go?
+
+| If you want to… | Read |
+|---|---|
+| Understand what REFRACT is and why it exists | This file (below) + [`docs/papers/attn-rotation-and-ppl-artifact.md`](../docs/papers/attn-rotation-and-ppl-artifact.md) |
+| Get to a real score in 30 minutes | [QUICKSTART.md](QUICKSTART.md) |
+| Read your own report (figure out what your score means) | [INTERPRETATION.md](INTERPRETATION.md) |
+| See which models score how on which KV configs | [LEADERBOARD.md](LEADERBOARD.md) |
+| Avoid known setup / interpretation traps | [PITFALLS.md](PITFALLS.md) |
+| See what v0.3 explicitly does NOT do | [LIMITATIONS.md](LIMITATIONS.md) |
+| See what changed across versions | [CHANGELOG.md](CHANGELOG.md) |
+| Compare your run to known-good reference numbers | [examples/](examples/) (4 sample JSONs + HTMLs) |
+| See the methodology evolution data | [MATRIX-RESULTS.md](MATRIX-RESULTS.md) |
+
+
 A benchmaxx-resistant alternative to corpus PPL for evaluating KV-cache
 quantization quality. Replaces "lower PPL = better" — a metric the paper
-[`docs/papers/attn-rotation-and-ppl-artifact.md`](../../docs/papers/attn-rotation-and-ppl-artifact.md)
-shows can invert sign on instruct-tuned models — with a composite of two
-fp16-anchored axes that ranks configurations by *distance from the fp16-KV
-reference*, not by absolute corpus likelihood.
-
-## What v0.1 ships
-
-Two of the four planned axes:
-
-| Axis | What it measures | Scoring |
-|------|------------------|---------|
-| **A — GTM** (Greedy Trajectory Match) | For K diverse prompts, what fraction of the candidate's model-tokenized completion matches the reference? | `100 * mean_prefix_agreement_length / mean_cand_length` |
-| **B — KLD@D** (KL Divergence vs reference, corpus proxy) | Mean KL divergence between candidate and reference distributions, via `llama-perplexity --kl-divergence`. | `100 * exp(-mean_kld_nats)` |
-
-GTM tokens come from `llama-tokenize` against the model's own vocab
-(v0.1.2+), and the score is normalized by the candidate's actual
-retokenized length (v0.1.3) so detokenize→retokenize inflation can't
-clip the score.
-
-Composite: `REFRACT = harmonic_mean(GTM, KLD)` clipped to `[0, 100]`.
-
-Bands: `[90,100]` EXCELLENT · `[80,90)` PASS · `[60,80)` DEGRADED · `[0,60)` FAIL.
+[`docs/papers/attn-rotation-and-ppl-artifact.md`](../docs/papers/attn-rotation-and-ppl-artifact.md)
+shows can invert sign on instruct-tuned models — with a 4-axis composite
+that ranks configurations by *distance from the fp16-KV reference*, not
+by absolute corpus likelihood.
 
 ## Why this exists
 
-The paper shows that on gemma-4 26B-A4B-Q8 at q8/turbo4 KV, corpus PPL on
-wikitext-2 says rotation OFF "wins" by 42% — but KLD vs the fp16-KV reference
-says the *same* configuration is 1.7 nats away from fp16, the largest drift on
-the row. The §4.5 noise floor on the KLD codepath is bit-exact zero on Metal,
-so the signal is real. PPL is reading mis-calibration as improvement.
+The motivation paper documents a real failure of corpus PPL: on
+**gemma-4-26B-A4B-Q8 with q8/turbo4 KV**, wikitext-2 PPL says rotation
+OFF "wins" by 42%, but **KLD vs the fp16-KV reference says the same
+configuration is 1.7 nats away from fp16** — the largest distribution
+drift on the row. The KLD codepath is bit-exact zero on Metal, so the
+signal is real. PPL is reading miscalibration as improvement.
 
-REFRACT rejects the PPL framing entirely: nothing matters except how close
-the quantized model's behaviour stays to its fp16 self.
+REFRACT rejects the PPL framing entirely: nothing matters except how
+close the quantized model's behaviour stays to its fp16 self.
 
-## Install
+Read [`docs/papers/attn-rotation-and-ppl-artifact.md`](../docs/papers/attn-rotation-and-ppl-artifact.md)
+for the full motivation.
 
-REFRACT is part of the `turboquant` package. From the repo root:
+## What ships in v0.3.2
 
-```bash
-pip install -e .
+Four axes, each scored 0–100 (higher is better) against the model's own
+fp16-KV reference:
+
+| Axis | Name | What it measures | Notes |
+|------|------|------------------|-------|
+| A | **Trajectory** | Token-level agreement on greedy decode (decode-time IDs, no detokenize round-trip) | v0.1.4+; replaces the buggy GTM default |
+| B | **KLD@D** | Distribution-level divergence on a natural-text corpus | Bit-exact zero on Metal at ref==cand |
+| C | **R-NIAH** | Long-context retrieval quality (needle-in-haystack at multiple lengths/positions) | v0.2.0+; opt-in via `--full` |
+| D | **PLAD** | Robustness to small prompt perturbations (typo/case/punct/paraphrase) | v0.2.0+; opt-in via `--full` |
+
+**Composite** = harmonic mean of the axes that ran. Any single broken
+axis tanks the composite — the framework is intentionally fail-loud.
+
+**Bands**: `[90,100]` EXCELLENT · `[80,90)` PASS · `[60,80)` DEGRADED · `[0,60)` FAIL.
+
+**Backends**: llama.cpp (production), MLX (production via mlx-lm), vLLM
+(skeleton with plug-in pointers).
+
+## Subcommands
+
 ```
-
-Stdlib + the existing `numpy`/`scipy` deps; no new pip requirements.
-
-## Required external binaries
-
-REFRACT shells out to `llama-cli` and `llama-perplexity`. By default it
-looks in `~/local_llms/llama.cpp/build-test/bin`. Override:
-
-```bash
-export LLAMA_CPP_BIN_DIR=/path/to/llama.cpp/build/bin
+refract score          # score a candidate KV config
+refract selftest       # 30s preflight: binaries, flags, model probe
+refract compare        # multi-report side-by-side
+refract repeatability  # run N times, report spread (stdev/range)
 ```
 
 ## Quickstart
 
+See [QUICKSTART.md](QUICKSTART.md) for full setup. Short version:
+
 ```bash
+# 1. Verify your setup
+python3 -m refract.cli selftest --backend auto --model path/to/model.gguf
+
+# 2. First quick score (~5-7 min on a 7B Q8)
 python3 -m refract.cli score \
-    --model ~/local_llms/models/Qwen2.5-7B-Instruct-Q8_0.gguf \
-    --reference 'ctk=f16,ctv=f16' \
-    --candidate 'ctk=q8_0,ctv=turbo4,attn_rot_v=0' \
+    --model path/to/model.gguf \
+    --candidate "ctk=q8_0,ctv=q8_0" \
     --prompts refract/prompts/v0.1.jsonl \
-    --corpus ~/local_llms/llama.cpp/wikitext-2-raw/wiki.test.raw \
-    --chunks 32 -c 512 -ngl 99 \
-    --measure-floor \
-    --json-out refract.qwen.json
-```
+    --corpus path/to/wiki.test.raw \
+    --json-out report.json \
+    --html-out report.html
 
-Sample output (illustrative — real numbers depend on the model and build):
-
-```
-========================================================================
- REFRACT v0.1 — Reference-anchored Robust Acid-test
-========================================================================
- model     : Qwen2.5-7B-Instruct-Q8_0.gguf
- reference : ctk=f16,ctv=f16
- candidate : ctk=q8_0,ctv=turbo4,attn_rot_v=0
- timestamp : 2026-04-29T11:14:02
-------------------------------------------------------------------------
- Noise floor (ref vs ref):  99.99  (min 99.5)  [OK]
-------------------------------------------------------------------------
- REFRACT     :  92.40  [######################################--]  EXCELLENT
-
- Axis A GTM  :  93.33  [######################################--]
- Axis B KLD  :  91.50  [#####################################---]
-------------------------------------------------------------------------
- GTM diagnostics
-   prompts                    : 30
-   tokens decoded each        : 128
-   full match rate            :  93.3 %
-   median first divergence    : token 47
-   mean prefix agreement      : 121.4 tokens
-
- KLD diagnostics
-   chunks x ctx               : 32 x 512
-   mean KLD (nats)            : 0.088732
-   candidate PPL              : 6.146
-   RMS Δp (vs reference)      : 3.13 %
-   same top-p (vs reference)  : 95.59 %
-========================================================================
-```
-
-## CLI flags
-
-| Flag | Default | Notes |
-|------|---------|-------|
-| `--model PATH`        | required | GGUF path |
-| `--reference SPEC`    | `ctk=f16,ctv=f16` | KV config string (see below) |
-| `--candidate SPEC`    | required | KV config string |
-| `--prompts PATH`      | required | JSONL prompts file |
-| `--corpus PATH`       | required | plain-text corpus for KLD |
-| `--chunks N`          | 32 | `--chunks` for `llama-perplexity` |
-| `-c N`                | 512 | context size |
-| `-ngl N`              | 99 | GPU layers |
-| `--n-predict N`       | 128 | tokens per GTM prompt |
-| `--seed N`            | 42 | greedy seed |
-| `--measure-floor`     | off | Run REFRACT(ref, ref) and abort if < 99.5 |
-| `--json-out PATH`     | — | Write the full report as JSON |
-| `--no-progress`       | off | Suppress per-prompt progress lines |
-
-### KV config spec format
-
-`key=value,key=value,...`
-
-| Key | Effect |
-|-----|--------|
-| `ctk`              | `-ctk <val>` (e.g. `f16`, `q8_0`, `turbo4`) |
-| `ctv`              | `-ctv <val>` |
-| `attn_rot_k`       | `LLAMA_ATTN_ROT_K_OVERRIDE=<val>` |
-| `attn_rot_v`       | `LLAMA_ATTN_ROT_V_OVERRIDE=<val>` |
-| `attn_rot_disable` | `LLAMA_ATTN_ROT_DISABLE=<val>` (hard lockout) |
-| any other          | passed through as `--<key> <value>` |
-
-## Validation
-
-`tests/test_validation.py` reproduces the gemma-4 26B-A4B q8/turbo4 OFF cell
-from the paper and asserts that REFRACT lands in `DEGRADED` or `FAIL`. PPL
-on this cell would say "win" (-42%); REFRACT must say "audit" or "fail".
-
-It is marked `integration` because it spawns llama.cpp many times against a
-26B model. To run:
-
-```bash
-# Mark it in pytest.ini if not already:
-#   markers = integration: marks tests requiring llama.cpp + a real GGUF
-pytest -m integration refract/tests/test_validation.py -s
-```
-
-Or directly via CLI:
-
-```bash
+# 3. Full audit (~25-30 min on a 7B Q8)
 python3 -m refract.cli score \
-    --model ~/local_llms/models/gemma-4-26B-A4B-Q8_0.gguf \
-    --reference 'ctk=f16,ctv=f16' \
-    --candidate 'ctk=q8_0,ctv=turbo4,attn_rot_v=0,attn_rot_k=0' \
+    --model path/to/model.gguf \
+    --candidate "ctk=q8_0,ctv=q8_0" \
     --prompts refract/prompts/v0.1.jsonl \
-    --corpus ~/local_llms/llama.cpp/wikitext-2-raw/wiki.test.raw \
-    --chunks 32 --measure-floor
+    --corpus path/to/wiki.test.raw \
+    --full \
+    --rniah-haystack path/to/wiki.train.raw \
+    --rniah-ctx-max 16384 \
+    --json-out report.json --html-out report.html
+
+# 4. Verify reproducibility (4 runs, expect stdev ≤ 1.0)
+python3 -m refract.cli repeatability \
+    --model path/to/model.gguf \
+    --candidate "ctk=q8_0,ctv=q8_0" \
+    --prompts refract/prompts/v0.1.jsonl \
+    --corpus path/to/wiki.test.raw \
+    --runs 4
 ```
 
-Fast unit tests (no subprocess) live in `tests/test_unit.py`.
+## Documentation
+
+| File | When to read |
+|------|--------------|
+| [QUICKSTART.md](QUICKSTART.md) | First-time setup + first run |
+| [INTERPRETATION.md](INTERPRETATION.md) | What does my score mean? Per-axis "what to do if low" |
+| [LEADERBOARD.md](LEADERBOARD.md) | Cross-model rankings on which KV configs (with the strong "this is NOT a model-quality leaderboard" disclaimer) |
+| [PITFALLS.md](PITFALLS.md) | Things that have actually bitten us — avoid them |
+| [LIMITATIONS.md](LIMITATIONS.md) | What v0.3 explicitly does NOT do |
+| [CHANGELOG.md](CHANGELOG.md) | Full history including the v0.2 / v0.3 discoveries |
+| [MATRIX-RESULTS.md](MATRIX-RESULTS.md) | Reference numbers from the 7-model 2026-04-30 matrix |
+| [examples/](examples/) | Sample JSONs + HTML reports (clean / degraded / distribution-broken / catastrophic) |
+| [docs/papers/attn-rotation-and-ppl-artifact.md](../docs/papers/attn-rotation-and-ppl-artifact.md) | Why this framework exists at all (the motivation paper) |
 
 ## File layout
 
 ```
 refract/
-  __init__.py
-  cli.py                    # CLI entry point
-  score.py                  # composite + bands + floor logic
+  __init__.py             # version stamp
+  cli.py                  # CLI: score / selftest / compare / repeatability
+  score.py                # composite + bands + diagnosis
+  report.py               # text + JSON report formatter
+  report_html.py          # self-contained HTML report (v0.3.2+)
+  runner.py               # llama.cpp subprocess wrappers + KVConfig
   axes/
-    __init__.py
-    gtm.py                  # Axis A: greedy trajectory match
-    kld.py                  # Axis B: KLD via llama-perplexity
-  runner.py                 # llama.cpp subprocess wrappers + KVConfig
-  report.py                 # text + JSON report formatter
-  prompts/
-    v0.1.jsonl              # 30 CC0 prompts
-  tests/
-    test_unit.py                  # math + KVConfig parsers (14 tests)
-    test_strip_noise.py           # runner._strip_noise pinning (5 tests)
-    test_command_construction.py  # llama.cpp arg list pinning (4 tests)
-    test_tokenize_to_ids.py       # llama-tokenize parser (5 tests)
-    test_kld_regex.py             # llama-perplexity output parser (6 tests)
-    test_report_json_layout.py    # JSON schema pinning (5 tests)
-    test_corpus_identity.py       # corpus sidecar machinery (5 tests)
-    test_validation.py            # paper-cell reproduction (integration)
-  README.md
-  LIMITATIONS.md          # v0.1.3 limitations shipped with this release
-  CHANGELOG.md            # reverse-chronological history
+    gtm.py                # Axis A: deprecated retokenize variant
+    trajectory.py         # Axis A: v0.1.4+ decode-time token IDs
+    kld.py                # Axis B: KLD via llama-perplexity / native MLX
+    rniah.py              # Axis C: needle-in-haystack
+    plad.py               # Axis D: perturbation drift
+  backends/
+    base.py               # Backend ABC
+    llamacpp.py           # llama.cpp subprocess backend (production)
+    mlx.py                # MLX native Python backend (production)
+    vllm.py               # vLLM backend (skeleton)
+  prompts/v0.1.jsonl      # 30 CC0 prompts
+  examples/               # 4 sample JSON reports + README
+  tests/                  # 82 unit tests + 1 integration test
+  README.md               # this file
+  QUICKSTART.md           # setup + first run
+  INTERPRETATION.md       # how to read a report
+  PITFALLS.md             # known traps
+  LIMITATIONS.md          # what v0.3 doesn't do
+  CHANGELOG.md            # reverse-chronological
+  MATRIX-RESULTS.md       # 2026-04-30 7-model matrix
 ```
 
-## v0.2 roadmap (deferred — explicitly NOT in v0.1)
+## Status
 
-- **Axis C — R-NIAH:** retrieval needle-in-a-haystack at long context. The
-  paper ends with "a more rigorous downstream probe... would likely surface
-  degradation that simple factual completions hide" — R-NIAH is that probe.
-- **Axis D — PLAD:** Perturbation-Locality Aware Drift. Measures whether
-  drift is concentrated on specific layers or token positions, which the
-  paper §3.6 nrot-ablation hints is mechanistically informative.
-- **True trajectory KLD:** capture per-step logits during generation in
-  GTM's forward pass instead of using corpus-KLD as a proxy. Requires a
-  small llama.cpp change (or a custom binary fork) to dump logits.
-- **Token-level diff via `llama-tokenize`** instead of whitespace split, so
-  GTM diff positions match real BPE/SP token indices.
+  - **Production**: llama.cpp backend, all four axes, MLX backend
+    (Trajectory + KLD + R-NIAH + PLAD).
+  - **Skeleton**: vLLM backend (interface defined; plug-in points
+    documented in `backends/vllm.py` docstring).
+  - **Open**: T-Call axis (tool-call fidelity) — v0.4 target;
+    multi-prompt-set support; bundled corpus distribution.
 
-## Known limitations
+## Contributing
 
-See [`LIMITATIONS.md`](LIMITATIONS.md) for the full list shipped with
-v0.1.3 (detokenize→retokenize gap, corpus-anchored KLD, provisional
-bands, single platform tested, GTM conflates divergence with EOS
-truncation, and the v0.1.3 fail-loud removal of the whitespace fallback).
+This is alpha. Open issues with:
+  - Your `selftest` output (so we know what you have)
+  - The full JSON of any failing run (`--json-out`)
+  - The HTML report if you want a visual share (`--html-out`)
+  - Your model + KV config
+
+Especially valuable feedback: surfaces where REFRACT fails silently
+(low base_acc, NaN perturbations, etc.) before the confidence guards
+catch them.

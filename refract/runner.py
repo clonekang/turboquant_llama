@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,24 @@ DEFAULT_BIN_DIR = Path(
         )
     )
 )
+
+
+# v0.3.1: backend dispatch. CLI sets this via set_active_backend() based on
+# --backend flag or REFRACT_BACKEND env. When set, the legacy run_completion
+# / run_completion_trajectory functions delegate to the backend so MLX or
+# vLLM users get the right inference engine without touching axis code.
+_ACTIVE_BACKEND = None  # type: ignore[var-annotated]
+
+
+def set_active_backend(backend) -> None:
+    """Set the active backend for subsequent run_completion* calls."""
+    global _ACTIVE_BACKEND
+    _ACTIVE_BACKEND = backend
+
+
+def get_active_backend():
+    """Return the active backend, or None if dispatch is bypassed."""
+    return _ACTIVE_BACKEND
 
 
 def _bin(name: str) -> Path:
@@ -193,19 +212,48 @@ def run_completion(
     seed: int = 42,
     temperature: float = 0.0,
     timeout: float = 300.0,
+    apply_chat_template: bool = True,
+    system: Optional[str] = None,
+    reasoning: str = "off",
 ) -> tuple[str, dict]:
     """Greedy-decode ``n_predict`` tokens from ``prompt`` using llama-cli.
 
     Returns (completion_text, metadata). The completion text has the prompt
     echo and llama-cli noise stripped.
 
-    NOTE: ``--single-turn`` is critical — without it llama-cli enters
-    interactive mode and the subprocess hangs forever waiting on stdin.
-    Discovered the hard way; see paper §4.8.
+    v0.3 chat-template handling
+    ---------------------------
+    By default (``apply_chat_template=True``), llama-cli is invoked with
+    ``--jinja`` so the model's own chat template (read from GGUF metadata)
+    wraps the prompt as a user message before generation. This is required
+    for instruct-tuned models to engage Q&A mode; raw completion gets the
+    model continuing the prompt stylistically rather than answering it
+    (see CHANGELOG v0.3 plan).
 
-    TODO(v0.2): replace with a logits-capturing custom binary so we can
-    compute true trajectory-KLD per generated step.
+    ``system`` is the system message to prepend; useful when the prompt
+    has a context+question split (R-NIAH puts the haystack here).
+    ``reasoning`` controls llama-cli's ``-rea`` flag — ``"off"`` disables
+    thinking traces deterministically so n_predict isn't burned on
+    `<think>...</think>` before the answer lands.
+
+    Set ``apply_chat_template=False`` for axes that need raw completion
+    (none today — the corpus-driven KLD axis uses a different code path).
+
+    NOTE: ``--single-turn`` is still critical — without it llama-cli
+    enters interactive mode and the subprocess hangs forever waiting on
+    stdin.
     """
+    # v0.3.1: dispatch to active backend if non-llamacpp is set.
+    if _ACTIVE_BACKEND is not None and getattr(_ACTIVE_BACKEND, "name", None) != "llamacpp":
+        res = _ACTIVE_BACKEND.run_completion(
+            model=model, prompt=prompt, kv_config_str=kv.label(),
+            n_predict=n_predict, ctx=ctx, n_gpu_layers=n_gpu_layers,
+            seed=seed, temperature=temperature, timeout=timeout,
+            apply_chat_template=apply_chat_template,
+            system=system, reasoning=reasoning,
+        )
+        return res.text, res.metadata
+
     bin_path = _bin("llama-cli")
 
     cmd: list[str] = [
@@ -226,6 +274,10 @@ def run_completion(
         "--no-display-prompt",
         "-fa", "on",
     ]
+    if apply_chat_template:
+        cmd.extend(["--jinja", "-rea", reasoning])
+        if system:
+            cmd.extend(["-sys", system])
     cmd.extend(kv.cli_args())
 
     env = os.environ.copy()
@@ -469,6 +521,127 @@ def assert_corpus_matches(base_path: Path, corpus: Path) -> None:
 # ---------------------------------------------------------------------------
 # llama-tokenize wrapper (used by GTM v0.1.2+)
 # ---------------------------------------------------------------------------
+
+
+def run_completion_trajectory(
+    model: Path,
+    prompt: str,
+    kv: KVConfig,
+    n_predict: int = 128,
+    ctx: int = 512,
+    n_gpu_layers: int = 99,
+    seed: int = 42,
+    temperature: float = 0.0,
+    timeout: float = 300.0,
+    apply_chat_template: bool = True,
+    system: Optional[str] = None,
+    reasoning: str = "off",
+) -> tuple[list[int], dict]:
+    """v0.1.4: greedy-decode and capture model-token IDs at decode time.
+
+    Drives the patched ``llama-completion`` binary with
+    ``REFRACT_TRAJECTORY=<tmpfile>`` set; the binary writes one JSONL record
+    per sampled token (``{"step":N,"token_id":ID}``). We read the file back,
+    return the ID sequence, and delete the file.
+
+    Returns (token_ids, metadata). The token IDs are the model's own
+    sampled tokens — no detokenize→retokenize round-trip, no whitespace-vs-
+    model-token unit mismatch. This is the v0.1.4 fix for GTM's structural
+    weakness (LIMITATIONS.md §1, §5).
+
+    Requires the ``llama-completion`` binary to be built from the patched
+    ``tools/completion/completion.cpp`` (REFRACT v0.1.4 patch). If the
+    binary lacks the patch, the trajectory file will be empty and this
+    function returns ``([], meta)``.
+    """
+    # v0.3.1: dispatch to active backend if non-llamacpp is set.
+    if _ACTIVE_BACKEND is not None and getattr(_ACTIVE_BACKEND, "name", None) != "llamacpp":
+        res = _ACTIVE_BACKEND.run_completion_trajectory(
+            model=model, prompt=prompt, kv_config_str=kv.label(),
+            n_predict=n_predict, ctx=ctx, n_gpu_layers=n_gpu_layers,
+            seed=seed, temperature=temperature, timeout=timeout,
+            apply_chat_template=apply_chat_template, system=system,
+        )
+        return res.token_ids, res.metadata
+
+    bin_path = _bin("llama-completion")
+
+    fd, traj_path = tempfile.mkstemp(prefix="refract-traj-", suffix=".jsonl")
+    os.close(fd)
+    os.unlink(traj_path)  # patched binary creates it itself
+
+    cmd: list[str] = [
+        str(bin_path),
+        "-m", str(model),
+        "-p", prompt,
+        "-n", str(n_predict),
+        "-c", str(ctx),
+        "-ngl", str(n_gpu_layers),
+        "--seed", str(seed),
+        "--temp", str(temperature),
+        "-no-cnv",
+        "--no-display-prompt",
+        "-fa", "on",
+    ]
+    # llama-completion supports --jinja and -sys but does NOT support
+    # `-rea on|off`; reasoning-trace control there is done via
+    # `--reasoning-format` which is a JSON-output knob, not a thinking
+    # toggle. For trajectory we accept whatever the model emits (thinking
+    # tokens are still real model tokens to compare).
+    if apply_chat_template:
+        cmd.append("--jinja")
+        if system:
+            cmd.extend(["-sys", system])
+    cmd.extend(kv.cli_args())
+
+    env = os.environ.copy()
+    env.update(kv.env())
+    env["REFRACT_TRAJECTORY"] = traj_path
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=timeout,
+            text=True,
+            errors="replace",
+        )
+        meta = {
+            "returncode": proc.returncode,
+            "cmd": " ".join(shlex.quote(c) for c in cmd),
+            "stderr_tail": proc.stderr[-2000:] if proc.stderr else "",
+            "trajectory_path": traj_path,
+        }
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"llama-completion exited {proc.returncode}\n"
+                f"cmd: {meta['cmd']}\n"
+                f"stderr tail:\n{meta['stderr_tail']}"
+            )
+
+        token_ids: list[int] = []
+        try:
+            with open(traj_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    token_ids.append(int(rec["token_id"]))
+        except FileNotFoundError:
+            # Patched binary not present, OR sampling produced 0 tokens
+            # (model emitted EOS immediately). Both are valid empty cases.
+            pass
+        meta["n_tokens"] = len(token_ids)
+        return token_ids, meta
+    finally:
+        try:
+            os.unlink(traj_path)
+        except OSError:
+            pass
 
 
 def tokenize_to_ids(

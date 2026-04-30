@@ -77,6 +77,32 @@ def run_kld(
     2. Score candidate against the base.
     3. Map mean KLD → 0–100 score.
     """
+    # v0.3.1: dispatch to active backend's native KLD when not llamacpp.
+    from ..runner import get_active_backend
+    active = get_active_backend()
+    if active is not None and getattr(active, "name", None) != "llamacpp":
+        if progress:
+            print(f"  [1/1] Native KLD via {active.name} backend (ref={reference_kv.label()}, cand={candidate_kv.label()})",
+                  flush=True)
+        bk_result = active.run_kld(
+            model=model, corpus=corpus,
+            ref_kv_str=reference_kv.label(),
+            cand_kv_str=candidate_kv.label(),
+            chunks=chunks, ctx=ctx, n_gpu_layers=n_gpu_layers,
+        )
+        return KLDResult(
+            score=_kld_to_score(bk_result.mean_kld),
+            mean_kld=bk_result.mean_kld,
+            ppl=bk_result.ppl,
+            rms_dp_pct=bk_result.rms_dp_pct,
+            same_topp_pct=bk_result.same_topp_pct,
+            base_path=bk_result.metadata.get("base_path", ""),
+            chunks=bk_result.chunks,
+            ctx=bk_result.ctx,
+            is_self_reference=(reference_kv.label() == candidate_kv.label()),
+            corpus=corpus_identity(corpus),
+        )
+
     cleanup_base = False
     if base_path is None:
         # tempfile.mkstemp gives us a path we own; llama-perplexity will

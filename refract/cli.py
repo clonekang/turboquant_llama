@@ -19,15 +19,103 @@ from pathlib import Path
 
 from .axes.gtm import run_gtm
 from .axes.kld import run_kld
+from .axes.plad import run_plad
+from .axes.rniah import run_rniah
+from .axes.trajectory import run_trajectory
 from .report import json_report, text_report, to_json_string
 from .runner import KVConfig
 from .score import MIN_FLOOR, composite_score
 
 
+_SCORE_DESCRIPTION = """\
+REFRACT v0.2 — score a KV-cache quantization config against a fp16-KV reference
+on the same model. Returns a 0–100 composite + EXCELLENT/PASS/DEGRADED/FAIL
+band, with per-axis bands and one-line plain-English interpretation.
+
+Four axes (A and B are cheap and run by default; C and D are opt-in):
+
+  A — GTM / Trajectory  Greedy Trajectory Match.
+                        Greedy-decode N tokens from each prompt under both
+                        the reference and candidate KV configs; compare the
+                        emitted token IDs. Score = fraction of the candidate's
+                        decoded tokens that match the reference. Catches "the
+                        candidate generates different text" failures.
+
+  B — KLD@D             KL Divergence at the Decoder.
+                        Per-token KL between the candidate's next-token
+                        distribution and the reference's, averaged across a
+                        natural-text corpus. Bit-exact zero on Metal when
+                        candidate == reference, so any non-zero is real
+                        signal. Catches "distributions silently shift even
+                        though argmax stayed the same" failures.
+
+  C — R-NIAH (--full)   Retrieval Needle-In-A-Haystack.
+                        Insert a sentinel fact ("the password is X") into a
+                        long context at fractional positions; ask the model
+                        to retrieve it. Score = 100 * (1 - mean candidate
+                        degradation vs reference per (length, position) cell).
+                        Catches "scores 99 on KLD@D but fails at 32K context"
+                        failures that short-window axes miss.
+
+  D — PLAD (--full)     Perturbation-Locality Aware Drift.
+                        Generate anchor completions; perturb each prompt
+                        minimally (typo, casing, punctuation, paraphrase);
+                        compare candidate's drift vs reference's drift via
+                        token edit distance. Catches "works on the demo,
+                        breaks on real users with typos" brittleness.
+
+Cost on a 7B Q8 model (Apple Silicon ballpark):
+  default  Trajectory + KLD                        ~5-7 min
+  --full   adds R-NIAH + PLAD                      ~25-30 min
+
+Composite = harmonic mean of all axes scored. Any single axis being broken
+drops the composite hard — the framework is intentionally fail-loud.
+"""
+
+_SCORE_EPILOG = """\
+Examples:
+
+  Quick go/no-go (default; just trajectory + KLD):
+    python3 -m refract.cli score \\
+        --model model.gguf \\
+        --candidate "ctk=q8_0,ctv=q8_0" \\
+        --prompts refract/prompts/v0.1.jsonl \\
+        --corpus  ~/local_llms/llama.cpp/wikitext-2-raw/wiki.test.raw \\
+        --axis-a trajectory
+
+  Full audit (all four axes):
+    python3 -m refract.cli score \\
+        --model model.gguf \\
+        --candidate "ctk=q8_0,ctv=turbo4" \\
+        --prompts refract/prompts/v0.1.jsonl \\
+        --corpus  ~/local_llms/llama.cpp/wikitext-2-raw/wiki.test.raw \\
+        --axis-a trajectory \\
+        --full \\
+        --rniah-haystack ~/local_llms/llama.cpp/wikitext-2-raw/wiki.train.raw \\
+        --rniah-ctx-max 16384 \\
+        --json-out report.json
+
+  Borderline result triage (start cheap, add R-NIAH only if you need it):
+    # First pass: composite=72 DEGRADED → see which axis dragged it down
+    python3 -m refract.cli score ... (default)
+    # If KLD is fine but trajectory is bad → don't run R-NIAH; the issue is
+    #   short-context distribution drift, not long-context retrieval.
+    # If KLD is fine AND trajectory is fine → run --axis-rniah; long-context
+    #   retrieval is the surface most likely to be the hidden problem.
+
+KV config syntax: comma-separated key=value pairs, e.g. "ctk=q8_0,ctv=turbo4".
+Recognised keys: ctk, ctv, attn_rot_k, attn_rot_v, attn_rot_disable.
+"""
+
+
 def _add_score_parser(sub):
+    import argparse as _ap
     p = sub.add_parser(
         "score",
-        help="Run REFRACT v0.1 on a candidate KV config vs the reference.",
+        help="Score a candidate KV config vs the fp16-KV reference (4 axes).",
+        description=_SCORE_DESCRIPTION,
+        epilog=_SCORE_EPILOG,
+        formatter_class=_ap.RawDescriptionHelpFormatter,
     )
     p.add_argument("--model", required=True, type=Path,
                    help="Path to the GGUF model.")
@@ -57,21 +145,106 @@ def _add_score_parser(sub):
                    help="Skip Axis A. Composite uses KLD only (debug).")
     p.add_argument("--skip-kld", action="store_true",
                    help="Skip Axis B. Composite uses GTM only (debug).")
+    p.add_argument("--axis-a", choices=["gtm", "trajectory"], default="trajectory",
+                   help="Axis A implementation. 'trajectory' (default, v0.1.4+) "
+                        "captures token IDs at decode time via the patched "
+                        "llama-completion binary — no detokenize round-trip. "
+                        "'gtm' (deprecated, v0.1.x) compares retokenized text "
+                        "and has known unit-mismatch artifacts.")
+    p.add_argument("--backend", choices=["auto", "llamacpp", "mlx", "vllm"],
+                   default="auto",
+                   help="Inference backend. 'auto' (default) infers from "
+                        "model path: .gguf → llamacpp; directory → mlx. "
+                        "Override via REFRACT_BACKEND env var.")
+    p.add_argument("--full", action="store_true",
+                   help="Enable all v0.2 axes (R-NIAH + PLAD). Equivalent to "
+                        "passing --axis-rniah --axis-plad. R-NIAH still "
+                        "requires --rniah-haystack and --rniah-ctx-max.")
+    p.add_argument("--axis-rniah", action="store_true",
+                   help="Enable Axis C (R-NIAH, v0.2). Probes long-context "
+                        "retrieval degradation. Requires --rniah-haystack and "
+                        "--rniah-ctx-max. Cost: ~10–15 min on a 7B Q8 "
+                        "(O(lengths × positions × n_trials × 2) generations).")
+    p.add_argument("--rniah-haystack", type=Path, default=None,
+                   help="Path to long-text haystack corpus for R-NIAH "
+                        "(e.g. wikitext-103 train).")
+    p.add_argument("--rniah-ctx-max", type=int, default=None,
+                   help="Largest context length the model supports. Cells "
+                        "with --rniah-lengths above this are skipped.")
+    p.add_argument("--rniah-lengths", type=str, default=None,
+                   help="Comma-separated R-NIAH context lengths in tokens. "
+                        "Default: 4096,8192,16384,32768,65536.")
+    p.add_argument("--rniah-positions", type=str, default=None,
+                   help="Comma-separated R-NIAH needle positions as "
+                        "fractions of length. Default: 0.10,0.50,0.90.")
+    p.add_argument("--rniah-trials", type=int, default=1,
+                   help="Trials per cell. Default: 1.")
+    p.add_argument("--axis-plad", action="store_true",
+                   help="Enable Axis D (PLAD, v0.2). Probes brittleness "
+                        "to small prompt perturbations. Reuses --prompts. "
+                        "Cost: ~5–7 min on a 7B Q8 "
+                        "(prompts × (1 + n_perturbations) × 2 generations).")
     p.add_argument("--json-out", type=Path, default=None,
                    help="Path to write the JSON report to.")
+    p.add_argument("--html-out", type=Path, default=None,
+                   help="Path to write a self-contained HTML report (single "
+                        "file with inline CSS, no JS deps). Includes hardware "
+                        "info, model params, and the exact repro command.")
     p.add_argument("--no-progress", action="store_true",
                    help="Suppress per-prompt progress output.")
     return p
 
 
 def _run_score(args) -> int:
+    from . import __version__
+    from .backends import auto_backend, get_backend
+    from .runner import set_active_backend
+
     ref_kv = KVConfig.parse(args.reference)
     cand_kv = KVConfig.parse(args.candidate)
 
-    print(f"REFRACT v0.1")
+    # v0.3.1: select backend per --backend flag (or auto-detect from model path).
+    if args.backend == "auto":
+        backend = auto_backend(args.model)
+    else:
+        backend = get_backend(args.backend)
+    set_active_backend(backend)
+
+    # --full is sugar for the two opt-in v0.2 axes.
+    if args.full:
+        args.axis_rniah = True
+        args.axis_plad = True
+
+    # Cost hint up front so the user knows what they're committing to.
+    cost_axes = ["A (~2 min)", "B (~5 min)"]
+    if args.axis_rniah:
+        cost_axes.append("C R-NIAH (~10-15 min)")
+    if args.axis_plad:
+        cost_axes.append("D PLAD (~5-7 min)")
+    cost_hint = " + ".join(cost_axes)
+
+    print(f"REFRACT v{__version__}")
     print(f"  model     : {args.model}")
     print(f"  reference : {ref_kv.label()}")
     print(f"  candidate : {cand_kv.label()}")
+    print(f"  backend   : {backend.name}")
+    print(f"  axes      : {cost_hint}  (estimates for a 7B Q8 model on Apple Silicon)")
+
+    # v0.3.1: thinking-mode auto-detect at startup. Reasoning is auto-disabled
+    # via -rea off in run_completion when backend supports it; we surface the
+    # detection so the user knows what we did and why.
+    thinking_detected, thinking_markers = False, []
+    try:
+        thinking_detected, thinking_markers = backend.detect_thinking_mode(
+            model=args.model, timeout=30,
+        )
+    except Exception as e:
+        print(f"  thinking  : probe failed ({e}); assuming non-thinking")
+    if thinking_detected:
+        print(f"  thinking  : DETECTED (markers: {thinking_markers}) — "
+              f"reasoning disabled, n_predict-aware fallback active")
+    else:
+        print(f"  thinking  : not detected")
     print()
 
     # ---- Floor check ------------------------------------------------------
@@ -127,18 +300,28 @@ def _run_score(args) -> int:
             return 2
         print()
 
-    # ---- GTM --------------------------------------------------------------
+    # ---- Axis A (GTM or Trajectory) ---------------------------------------
     if args.skip_gtm:
         gtm = _stub_gtm()
     else:
-        print("Running Axis A (GTM)...")
-        gtm = run_gtm(
-            model=args.model, reference_kv=ref_kv, candidate_kv=cand_kv,
-            prompts_path=args.prompts, n_predict=args.n_predict,
-            ctx=args.ctx, n_gpu_layers=args.n_gpu_layers, seed=args.seed,
-            progress=not args.no_progress,
-        )
-        print(f"  GTM score: {gtm.score:.2f}")
+        if args.axis_a == "trajectory":
+            print("Running Axis A (Trajectory, v0.1.4)...")
+            gtm = run_trajectory(
+                model=args.model, reference_kv=ref_kv, candidate_kv=cand_kv,
+                prompts_path=args.prompts, n_predict=args.n_predict,
+                ctx=args.ctx, n_gpu_layers=args.n_gpu_layers, seed=args.seed,
+                progress=not args.no_progress,
+            )
+            print(f"  Trajectory score: {gtm.score:.2f}")
+        else:
+            print("Running Axis A (GTM, v0.1.x)...")
+            gtm = run_gtm(
+                model=args.model, reference_kv=ref_kv, candidate_kv=cand_kv,
+                prompts_path=args.prompts, n_predict=args.n_predict,
+                ctx=args.ctx, n_gpu_layers=args.n_gpu_layers, seed=args.seed,
+                progress=not args.no_progress,
+            )
+            print(f"  GTM score: {gtm.score:.2f}")
 
     # ---- KLD --------------------------------------------------------------
     if args.skip_kld:
@@ -154,8 +337,59 @@ def _run_score(args) -> int:
         )
         print(f"  KLD score: {kld.score:.2f}  (mean KLD = {kld.mean_kld:.6f} nats)")
 
+    # ---- R-NIAH (v0.2 opt-in) ---------------------------------------------
+    rniah = None
+    if args.axis_rniah:
+        if args.rniah_haystack is None or args.rniah_ctx_max is None:
+            print("ERROR: --axis-rniah requires --rniah-haystack and --rniah-ctx-max.")
+            return 2
+        lengths = (
+            tuple(int(x) for x in args.rniah_lengths.split(","))
+            if args.rniah_lengths else None
+        )
+        positions = (
+            tuple(float(x) for x in args.rniah_positions.split(","))
+            if args.rniah_positions else None
+        )
+        kwargs: dict = {
+            "model": args.model,
+            "haystack_corpus": args.rniah_haystack,
+            "reference_kv": ref_kv,
+            "candidate_kv": cand_kv,
+            "ctx_max": args.rniah_ctx_max,
+            "n_trials": args.rniah_trials,
+            "n_gpu_layers": args.n_gpu_layers,
+            "seed": args.seed,
+            "progress": not args.no_progress,
+        }
+        if lengths is not None:
+            kwargs["lengths"] = lengths
+        if positions is not None:
+            kwargs["positions"] = positions
+        print("Running Axis C (R-NIAH, v0.2)...")
+        rniah = run_rniah(**kwargs)
+        print(f"  R-NIAH score: {rniah.score:.2f}  ({rniah.n_cells} cells)")
+
+    # ---- PLAD (v0.2 opt-in) -----------------------------------------------
+    plad = None
+    if args.axis_plad:
+        print("Running Axis D (PLAD, v0.2)...")
+        plad = run_plad(
+            model=args.model, prompts_path=args.prompts,
+            reference_kv=ref_kv, candidate_kv=cand_kv,
+            n_predict=args.n_predict, ctx=args.ctx,
+            n_gpu_layers=args.n_gpu_layers, seed=args.seed,
+            progress=not args.no_progress,
+        )
+        print(f"  PLAD score: {plad.score:.2f}")
+
     # ---- Composite --------------------------------------------------------
-    composite = composite_score(gtm.score, kld.score, floor_score=floor_score)
+    composite = composite_score(
+        gtm.score, kld.score,
+        rniah_score=rniah.score if rniah else None,
+        plad_score=plad.score if plad else None,
+        floor_score=floor_score,
+    )
 
     print()
     print(text_report(
@@ -163,19 +397,33 @@ def _run_score(args) -> int:
         reference_label=ref_kv.label(),
         candidate_label=cand_kv.label(),
         composite=composite,
-        gtm=gtm, kld=kld,
+        gtm=gtm, kld=kld, rniah=rniah, plad=plad,
     ))
 
-    if args.json_out:
+    rep = None
+    if args.json_out or args.html_out:
         rep = json_report(
             model=str(args.model),
             reference_label=ref_kv.label(),
             candidate_label=cand_kv.label(),
             composite=composite,
-            gtm=gtm, kld=kld,
+            gtm=gtm, kld=kld, rniah=rniah, plad=plad,
         )
+    if args.json_out:
         args.json_out.write_text(to_json_string(rep))
         print(f"\nJSON report written to {args.json_out}")
+    if args.html_out:
+        from .report_html import html_report
+        html = html_report(
+            model=str(args.model),
+            reference_label=ref_kv.label(),
+            candidate_label=cand_kv.label(),
+            composite=composite,
+            gtm=gtm, kld=kld, rniah=rniah, plad=plad,
+            raw_json=rep,
+        )
+        args.html_out.write_text(html)
+        print(f"HTML report written to {args.html_out}")
 
     return 0
 
@@ -200,16 +448,374 @@ def _stub_kld(chunks: int, ctx: int):
     )
 
 
+_TOP_DESCRIPTION = """\
+REFRACT — REFerence-anchored Robust Acid-test for Compressed Transformers.
+
+A benchmaxx-resistant alternative to corpus PPL for evaluating KV-cache
+quantization quality on a model. Replaces "lower PPL = better" — a metric
+that can invert sign on instruct-tuned models — with a 4-axis composite
+anchored to the fp16-KV reference.
+
+Subcommands:
+  score   run REFRACT on a candidate KV config vs the reference
+
+Run `refract score --help` for full options + usage examples.
+"""
+
+
+def _add_selftest_parser(sub):
+    p = sub.add_parser(
+        "selftest",
+        help="Run a 30-second preflight verifying setup before a real run.",
+        description=(
+            "Verifies the environment is ready for REFRACT: checks "
+            "llama.cpp binaries (or mlx-lm import), required CLI flags "
+            "(--jinja, REFRACT_TRAJECTORY env), KV cache types compiled "
+            "in, model loadable, fp16-vs-fp16 floor sanity. Bails out "
+            "with a useful message on any failure so you don't burn 30 "
+            "minutes of a real run finding out llama.cpp lacks turbo."
+        ),
+    )
+    p.add_argument("--backend", choices=["auto", "llamacpp", "mlx", "vllm"],
+                   default="auto", help="Backend to test (default: auto).")
+    p.add_argument("--model", type=Path, default=None,
+                   help="Optional small model to use for the floor smoke run. "
+                        "If omitted, only static checks run.")
+    return p
+
+
+def _run_selftest(args) -> int:
+    from . import __version__
+    from .backends import get_backend, auto_backend, BackendCapabilityError
+    print(f"REFRACT v{__version__} selftest")
+    print()
+
+    failures: list[str] = []
+    warnings: list[str] = []
+
+    # --- Backend selection ---
+    if args.backend == "auto":
+        if args.model:
+            backend = auto_backend(args.model)
+        else:
+            from .backends.llamacpp import LlamaCppBackend
+            backend = LlamaCppBackend()
+    else:
+        backend = get_backend(args.backend)
+    print(f"Backend: {backend.name}")
+
+    # --- Backend-specific binaries ---
+    if backend.name == "llamacpp":
+        from .runner import DEFAULT_BIN_DIR
+        print(f"  bin dir : {DEFAULT_BIN_DIR}")
+        for tool in ("llama-cli", "llama-completion", "llama-tokenize",
+                     "llama-perplexity"):
+            p = DEFAULT_BIN_DIR / tool
+            if p.exists():
+                print(f"  ✓ {tool}")
+            else:
+                print(f"  ✗ {tool}  (set LLAMA_CPP_BIN_DIR or rebuild)")
+                failures.append(f"missing binary: {tool}")
+        # Check for --jinja flag support
+        try:
+            import subprocess as _sp
+            help_text = _sp.run(
+                [str(DEFAULT_BIN_DIR / "llama-completion"), "--help"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+            if "--jinja" in help_text:
+                print("  ✓ --jinja chat template flag supported")
+            else:
+                print("  ✗ --jinja not in llama-completion help")
+                failures.append("--jinja missing — chat templates won't apply")
+            if "REFRACT_TRAJECTORY" in help_text or "trajectory" in help_text.lower():
+                print("  ✓ REFRACT_TRAJECTORY likely supported")
+            else:
+                # The patch is env-var triggered, no help-string evidence.
+                # Run a probe instead.
+                warnings.append(
+                    "Could not verify REFRACT_TRAJECTORY support from --help. "
+                    "Run a quick trajectory probe to confirm."
+                )
+        except Exception as e:
+            warnings.append(f"Could not probe llama-completion --help: {e}")
+    elif backend.name == "mlx":
+        try:
+            from .backends.mlx import _require_mlx
+            _require_mlx()
+            print("  ✓ mlx + mlx_lm importable")
+        except BackendCapabilityError as e:
+            print(f"  ✗ mlx not importable: {e}")
+            failures.append(str(e))
+    elif backend.name == "vllm":
+        try:
+            import vllm  # noqa
+            print(f"  ✓ vllm importable (version: {getattr(vllm, '__version__', 'unknown')})")
+        except ImportError:
+            print("  ✗ vllm not importable; pip install vllm")
+            failures.append("vllm not importable")
+
+    # --- Model probe (optional) ---
+    if args.model:
+        if not args.model.exists():
+            print(f"  ✗ model not found: {args.model}")
+            failures.append(f"model missing: {args.model}")
+        else:
+            print(f"\nProbing model: {args.model.name}")
+            try:
+                result = backend.run_completion(
+                    model=args.model,
+                    prompt="What is 2+2?",
+                    kv_config_str="ctk=f16,ctv=f16",
+                    n_predict=16, ctx=128, seed=42, temperature=0.0,
+                    timeout=120,
+                )
+                preview = (result.text or "").replace("\n", " ")[:80]
+                print(f"  ✓ generation works → {preview!r}")
+            except Exception as e:
+                print(f"  ✗ generation failed: {e}")
+                failures.append(f"model generation: {e}")
+            # Thinking probe
+            try:
+                detected, markers = backend.detect_thinking_mode(model=args.model)
+                if detected:
+                    print(f"  ℹ thinking-mode detected (markers: {markers}). "
+                          "REFRACT will handle this automatically.")
+                else:
+                    print("  ✓ no thinking-mode markers (faster runs)")
+            except Exception as e:
+                warnings.append(f"thinking-mode probe failed: {e}")
+
+    # --- Summary ---
+    print()
+    if failures:
+        print(f"FAILED  {len(failures)} issue(s):")
+        for f in failures:
+            print(f"  - {f}")
+        return 2
+    if warnings:
+        print(f"OK with {len(warnings)} warning(s):")
+        for w in warnings:
+            print(f"  - {w}")
+    else:
+        print("OK — selftest passed.")
+    print()
+    print("You're ready to run `refract score --model ... --candidate ... ...`.")
+    return 0
+
+
+def _add_compare_parser(sub):
+    p = sub.add_parser(
+        "compare",
+        help="Side-by-side comparison of multiple report JSONs.",
+    )
+    p.add_argument("reports", type=Path, nargs="+",
+                   help="Two or more report.json files to compare.")
+    return p
+
+
+def _run_compare(args) -> int:
+    import json as _json
+    rows = []
+    for path in args.reports:
+        try:
+            d = _json.loads(path.read_text())
+        except Exception as e:
+            print(f"skip {path}: {e}")
+            continue
+        rows.append({
+            "label": path.stem,
+            "composite": d.get("composite"),
+            "band": d.get("band"),
+            "summary": d.get("summary"),
+            "axes": d.get("axes", {}),
+            "version": d.get("framework_version"),
+            "backend": d.get("environment", {}).get("backend"),
+        })
+    if not rows:
+        print("no reports parsed")
+        return 1
+    # Print a markdown-style comparison table
+    print()
+    print(f"{'Report':<32} {'Comp':>7} {'Band':<10} {'Traj':>7} {'KLD':>7} {'R-NIAH':>7} {'PLAD':>7}")
+    print("-" * 80)
+    for r in rows:
+        a = r["axes"]
+        def fmt(d, k):
+            try:
+                return f"{a[k]['score']:.2f}"
+            except Exception:
+                return "—"
+        print(f"{r['label'][:32]:<32} {r['composite']:>7.2f} {r['band']:<10} "
+              f"{fmt(a, 'gtm'):>7} {fmt(a, 'kld'):>7} "
+              f"{fmt(a, 'rniah'):>7} {fmt(a, 'plad'):>7}")
+    print()
+    return 0
+
+
+def _add_repeatability_parser(sub):
+    p = sub.add_parser(
+        "repeatability",
+        help="Run the same scoring config N times and report the spread.",
+        description=(
+            "Verifies REFRACT scores are reproducible on the same model + "
+            "candidate. Runs ``score`` N times back-to-back, then prints "
+            "min/median/max + stdev for the composite and each axis. "
+            "Healthy framework: composite stdev ≤ 1.0, per-axis stdev ≤ 2.0 "
+            "(R-NIAH may be noisier on n_trials=1)."
+        ),
+    )
+    p.add_argument("--model", required=True, type=Path)
+    p.add_argument("--candidate", required=True)
+    p.add_argument("--reference", default="ctk=f16,ctv=f16")
+    p.add_argument("--prompts", required=True, type=Path)
+    p.add_argument("--corpus", required=True, type=Path)
+    p.add_argument("--runs", type=int, default=4,
+                   help="Number of repeat runs (default: 4).")
+    p.add_argument("--n-predict", type=int, default=50)
+    p.add_argument("--ctx", "-c", type=int, default=512)
+    p.add_argument("--chunks", type=int, default=32)
+    p.add_argument("--n-gpu-layers", "-ngl", type=int, default=99)
+    p.add_argument("--seed", type=int, default=42,
+                   help="Seed used for ALL runs. Identical seed gives upper "
+                        "bound on reproducibility — variance comes purely "
+                        "from non-determinism in the engine, not RNG.")
+    p.add_argument("--axis-a", choices=["gtm", "trajectory"], default="trajectory")
+    p.add_argument("--full", action="store_true",
+                   help="Include R-NIAH + PLAD in each repeat run.")
+    p.add_argument("--rniah-haystack", type=Path, default=None)
+    p.add_argument("--rniah-ctx-max", type=int, default=None)
+    p.add_argument("--backend", choices=["auto", "llamacpp", "mlx", "vllm"],
+                   default="auto")
+    p.add_argument("--out-dir", type=Path, default=None,
+                   help="Directory for per-run JSON outputs. Default: tmp.")
+    return p
+
+
+def _run_repeatability(args) -> int:
+    """Run ``score`` N times and report the spread per-axis."""
+    import json as _json
+    import statistics as _stats
+    import tempfile as _tf
+
+    from . import __version__
+    from .backends import auto_backend, get_backend
+    from .runner import set_active_backend
+
+    # Set backend up front so all runs share it
+    backend = (auto_backend(args.model) if args.backend == "auto"
+               else get_backend(args.backend))
+    set_active_backend(backend)
+
+    out_dir = args.out_dir or Path(_tf.mkdtemp(prefix="refract-repeatability-"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"REFRACT v{__version__} repeatability — {args.runs} runs")
+    print(f"  model     : {args.model}")
+    print(f"  candidate : {args.candidate}")
+    print(f"  output    : {out_dir}")
+    print()
+
+    composite_scores: list[float] = []
+    axis_scores: dict[str, list[float]] = {
+        "trajectory": [], "kld": [], "rniah": [], "plad": [],
+    }
+
+    # Build a one-shot args namespace for each run
+    import argparse as _ap
+    base_args = _ap.Namespace(
+        model=args.model, reference=args.reference, candidate=args.candidate,
+        prompts=args.prompts, corpus=args.corpus,
+        chunks=args.chunks, ctx=args.ctx, n_gpu_layers=args.n_gpu_layers,
+        n_predict=args.n_predict, seed=args.seed,
+        measure_floor=False, skip_gtm=False, skip_kld=False,
+        axis_a=args.axis_a, full=args.full,
+        axis_rniah=args.full,
+        rniah_haystack=args.rniah_haystack,
+        rniah_ctx_max=args.rniah_ctx_max,
+        rniah_lengths=None, rniah_positions=None, rniah_trials=1,
+        axis_plad=args.full,
+        json_out=None, html_out=None, no_progress=True,
+        backend=args.backend,
+    )
+
+    for i in range(1, args.runs + 1):
+        json_path = out_dir / f"run-{i:02d}.json"
+        run_args = _ap.Namespace(**vars(base_args))
+        run_args.json_out = json_path
+        print(f"=== run {i}/{args.runs} → {json_path.name} ===")
+        rc = _run_score(run_args)
+        if rc != 0:
+            print(f"  run {i} failed (rc={rc}); aborting")
+            return rc
+        try:
+            d = _json.loads(json_path.read_text())
+            composite_scores.append(float(d.get("composite", 0)))
+            for axis, key in (("trajectory", "gtm"), ("kld", "kld"),
+                              ("rniah", "rniah"), ("plad", "plad")):
+                ax = d.get("axes", {}).get(key, {})
+                if "score" in ax and isinstance(ax["score"], (int, float)):
+                    axis_scores[axis].append(float(ax["score"]))
+        except Exception as e:
+            print(f"  warning: could not parse {json_path}: {e}")
+
+    # Spread report
+    print()
+    print("=" * 72)
+    print(f"REPEATABILITY ({args.runs} runs)")
+    print("=" * 72)
+
+    def _spread(values: list[float]) -> str:
+        if not values:
+            return "no data"
+        if len(values) == 1:
+            return f"single run: {values[0]:.2f}"
+        return (
+            f"min={min(values):.2f}  med={_stats.median(values):.2f}  "
+            f"max={max(values):.2f}  stdev={_stats.stdev(values):.2f}  "
+            f"range={max(values) - min(values):.2f}"
+        )
+
+    print(f"composite  : {_spread(composite_scores)}")
+    for axis, vals in axis_scores.items():
+        print(f"  {axis:<10}: {_spread(vals)}")
+
+    # Health check
+    print()
+    if composite_scores:
+        if len(composite_scores) > 1:
+            cs_stdev = _stats.stdev(composite_scores)
+            if cs_stdev <= 1.0:
+                print(f"✓ HEALTHY  composite stdev {cs_stdev:.2f} ≤ 1.0")
+            elif cs_stdev <= 3.0:
+                print(f"⚠ NOISY    composite stdev {cs_stdev:.2f} (1.0-3.0): "
+                      "results stable but with some run-to-run jitter")
+            else:
+                print(f"✗ UNSTABLE composite stdev {cs_stdev:.2f} > 3.0: "
+                      "framework or engine is non-deterministic. Investigate.")
+    return 0
+
+
 def main(argv=None) -> int:
+    import argparse as _ap
     parser = argparse.ArgumentParser(
         prog="refract",
-        description="REFRACT v0.1 — KV-cache quantization quality oracle.",
+        description=_TOP_DESCRIPTION,
+        formatter_class=_ap.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     _add_score_parser(sub)
+    _add_selftest_parser(sub)
+    _add_compare_parser(sub)
+    _add_repeatability_parser(sub)
     args = parser.parse_args(argv)
     if args.cmd == "score":
         return _run_score(args)
+    if args.cmd == "selftest":
+        return _run_selftest(args)
+    if args.cmd == "compare":
+        return _run_compare(args)
+    if args.cmd == "repeatability":
+        return _run_repeatability(args)
     parser.error(f"unknown subcommand: {args.cmd}")
     return 1
 
