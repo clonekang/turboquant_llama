@@ -5,6 +5,109 @@ matrix result that motivated or validated the change.
 
 ---
 
+## v0.1.3 — 2026-04-29 (matrix-3 → defensive patch round)
+
+### Context
+
+v0.1.3 is purely defensive — no new functional axes, only test coverage,
+fail-loud guards, and honest docs. Triggered by:
+
+1. **The v0.1.2 matrix run revealed a fourth GTM bug.** Even with
+   model-token tokenization (the v0.1.2 fix), `mean_prefix_agreement`
+   for gemma-4 31B came out at 137 tokens vs `n_predict=48` — a 2.87×
+   inflation that re-clipped the GTM score to 100 on a known-degraded
+   config. Root cause: detokenize → re-tokenize on verbose
+   chain-of-thought outputs can produce ~3× the original token count.
+2. **A codex review surfaced a silent fallback** in `axes/gtm.py`. If
+   `tokenize_to_ids` raised, a bare `try/except` fell back to
+   `_tokenize_words` (whitespace) — silently mixing whitespace-token
+   counts with model-token expectations. The comment claimed it was
+   "logged as a per-prompt note"; it wasn't. There was zero way to
+   detect a wrong-unit score downstream.
+3. **No regression test coverage existed** for any of the four bugs
+   v0.1.x had to chase: banner-comparing (v0.1), nested-composite JSON
+   schema (v0.1), backspace-noise stripping (v0.1.1), Mistral
+   UnicodeDecodeError (v0.1.2), GTM unit mismatch (v0.1.2). Every patch
+   round was discovered after a multi-hour matrix run.
+
+### v0.1.2 matrix results
+
+7 models on `q8/turbo4 OFF` vs `fp16-KV`, 30 prompts, n_predict=48,
+KLD chunks=32, ctx=512.
+
+| Model | composite | band | GTM | KLD@D | mean_kld | prefix/n_predict |
+|---|---|---|---|---|---|---|
+| gemma-4 31B Q8 | (clipped) | — | **100.00** ⚠ (137 tok / 48 n_pred = 2.87×) | 49.23 | 0.7086 | 2.87 ⚠ |
+| phi-4 Q8 | ~65 | DEGRADED | meaningful | 99.55 | 0.0046 | <1 |
+| qwen3.5-2B Q8 | ~63 | DEGRADED | meaningful | 98.35 | 0.0167 | <1 |
+| gemma-4 E2B Q4_K_L | ~60 | FAIL | meaningful | 93.50 | 0.0672 | <1 |
+| qwen2.5-7B Q8 | ~44 | FAIL | meaningful | 98.75 | 0.0126 | <1 |
+| gemma-4 26B-A4B Q8 | ~25 | FAIL | meaningful | 17.59 | 1.7381 | <1 |
+| Mistral-Small-24B Q4 | ran | — | meaningful | parsed (no crash, errors='replace' fix) | — | — |
+
+What v0.1.2 fixed (still good in v0.1.3):
+- KLD@D rankings still match paper §4.3 perfectly.
+- Mistral no longer crashes with `UnicodeDecodeError` (errors='replace'
+  fix worked).
+- 6 of 7 models produced meaningful, non-clipped GTM scores in the
+  right units.
+
+What v0.1.2 didn't fix:
+- gemma-4 31B re-clipped GTM=100 due to retokenize inflation. The
+  fix in v0.1.3 is to normalize by `mean_cand_length` instead of
+  `n_predict`.
+
+### v0.1.3 changes
+
+| File | Change | Why |
+|---|---|---|
+| `axes/gtm.py` | Tokenizer-failure fallback now RAISES instead of silently using whitespace | The previous `try/except → _tokenize_words` produced wrong-unit scores with no way to detect. Fail-loud is correct here — a wrong score is worse than no score. |
+| `axes/gtm.py` | Score now `100 * mean_prefix / mean_cand_length` (was `... / n_predict`) | Bounded in [0, 1] regardless of detokenize→retokenize inflation. Fixes the gemma-31B 2.87× clip. |
+| `axes/gtm.py` | `GTMResult` exposes `mean_cand_length`, `mean_ref_length`, `notes` | So aggregators can spot retokenize inflation directly. |
+| `cli.py` | `--measure-floor` additionally asserts `mean_prefix == mean_cand_length` on ref-vs-ref | KLD ref-vs-ref is bit-exact zero on Metal so the composite floor passes even when GTM is broken. The new check catches that. |
+| `runner.py` | `_TOPP_RE` regex tolerates `Same top p` (space) and `Same top-p` (dash) | A test surfaced that the v0.1.2 regex only matched the dashed form. The space form occurs in real llama-perplexity output. |
+| `runner.py` | New `corpus_identity()`, `write_corpus_sidecar()`, `read_corpus_sidecar()`, `assert_corpus_matches()` | Records corpus path/size/SHA next to the KLD base file. Refuses to score against a base built from a different corpus. |
+| `axes/kld.py` | Writes a `<base>.corpus.json` sidecar, reads it on user-supplied bases, includes corpus identity in `KLDResult` | Wires the new machinery in. JSON now records what corpus the run was scored on. |
+| `report.py` | Schema bumped: `refract.report.v0.1.1` → `refract.report.v0.1.3` | Both the GTMResult shape and the corpus-identity field changed; the schema number is the integration contract. |
+| `report.py` | Text report shows `mean cand / ref length` and any GTM `notes` | Surfaces the retokenize-inflation diagnostic. |
+| `__init__.py` | `__version__ = "0.1.3"` | Match the schema. |
+| `tests/test_strip_noise.py` | NEW — 5 tests pinning `_strip_noise` against the v0.1.1 banner / backspace / block-char regressions | Would have caught the v0.1.1 banner-comparing bug pre-matrix. |
+| `tests/test_command_construction.py` | NEW — 4 tests pinning `--single-turn` / no-`--no-conversation` / `--kl-divergence-base` / `errors='replace'` | Would have caught the v0.1.1 (`--no-conversation` regression) and v0.1.2 (Unicode crash) bugs pre-matrix. |
+| `tests/test_tokenize_to_ids.py` | NEW — 5 tests pinning the `[1, 2, 3]` parser, empty-input short-circuit, and the v0.1.3 raise-on-error contract | Would have caught a future regression of the v0.1.3 fail-loud contract. |
+| `tests/test_kld_regex.py` | NEW — 6 tests pinning the perplexity regexes, including the gemma-missing-Same-top-p edge case | Surfaced and fixed the `Same top p` (space) parsing bug while writing the test. |
+| `tests/test_report_json_layout.py` | NEW — 5 tests pinning the JSON schema (composite is scalar, schema string, axes block) | Would have caught the v0.1 nested-composite serialisation bug pre-matrix. |
+| `tests/test_corpus_identity.py` | NEW — 5 tests for the new sidecar machinery | Guards the corpus-mismatch check. |
+| `tests/test_validation.py` | Strengthened with explicit GTM assertions: `full_match_rate < 1.0`, `mean_prefix > 0`, ≥3 distinct ref texts | Even the integration test would have flagged the v0.1.1 banner bug if it had these; previously it asserted only on `composite.band`. |
+| `README.md` | Refresh to reflect v0.1.2 model-token tokenization + v0.1.3 candidate-length normalization, point to `LIMITATIONS.md`, list new test files | Docs honesty. |
+| `axes/gtm.py` (module docstring) | Same docs cleanup | Docs honesty. |
+| `LIMITATIONS.md` | NEW — documents the limitations we're shipping with: detokenize→retokenize gap, corpus-anchored KLD, provisional bands, single platform tested, GTM/EOS conflation, whitespace fallback removal | Codex review surfaced these explicitly; documenting them is more honest than burying TODO comments. |
+
+### Test count
+
+| Version | Total tests | Notes |
+|---|---|---|
+| v0.1 – v0.1.2 | 14 | Math + parsers only; subprocess wrappers and runner had zero coverage. |
+| v0.1.3 | **44** unit + 1 integration | 30 new regression tests across 6 new files; integration test strengthened with 4 new GTM assertions. |
+
+v0.1.3 is the first version with regression test coverage of the
+subprocess and runner layers. Everything that broke in v0.1.x now has
+a fast, no-subprocess test that would have caught the bug before the
+matrix run.
+
+### Open questions (deliberately deferred to v0.2)
+
+- **Should the corpus-identity check be a hard error or a warning?**
+  Current behaviour is hard error (RuntimeError). Argument for warning:
+  in pipeline use, a user might intentionally re-use a base file across
+  truncations of the same corpus. Argument for hard error: the cost of
+  a meaningless KLD result that gets believed is much higher than the
+  cost of a misfire.
+- **Bands re-calibration once trajectory KLD lands** — current 95/80/60
+  thresholds are calibrated against corpus-KLD and will need updating
+  when the absolute KLD scale changes.
+
+---
+
 ## v0.1.2 — 2026-04-29 (matrix-2 → matrix-3 patch round)
 
 ### Context

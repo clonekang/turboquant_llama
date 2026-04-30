@@ -101,6 +101,30 @@ def _run_score(args) -> int:
             print("The reference itself is non-deterministic on this build.")
             print("KLD deltas vs this reference cannot be trusted. Aborting.")
             return 2
+        # v0.1.3: composite-level floor passes if KLD is ~100 (bit-exact zero
+        # on Metal) even when GTM is in a "high-score broken" state. Add a
+        # GTM-level byte-identity check: ref-vs-ref greedy must match for
+        # the FULL retokenized candidate length on every prompt. If
+        # mean_prefix != mean_cand, the tokenizer or runner is broken.
+        if floor_gtm.mean_cand_length > 0:
+            ratio = (
+                floor_gtm.mean_prefix_agreement_length
+                / floor_gtm.mean_cand_length
+            )
+        else:
+            ratio = 0.0
+        if abs(ratio - 1.0) > 1e-9:
+            print()
+            print(
+                f"ERROR: GTM ref-vs-ref ratio = {ratio:.6f} (expected 1.0). "
+                f"mean_prefix={floor_gtm.mean_prefix_agreement_length:.2f}, "
+                f"mean_cand_length={floor_gtm.mean_cand_length:.2f}."
+            )
+            print(
+                "GTM ref-vs-ref isn't byte-identical, your tokenizer or "
+                "runner is broken. Aborting."
+            )
+            return 2
         print()
 
     # ---- GTM --------------------------------------------------------------
@@ -162,6 +186,7 @@ def _stub_gtm():
     return GTMResult(
         score=100.0, full_match_rate=1.0,
         median_first_divergence=None, mean_prefix_agreement_length=0.0,
+        mean_cand_length=0.0, mean_ref_length=0.0,
         n_prompts=0, n_tokens_each=0, per_prompt=[],
     )
 

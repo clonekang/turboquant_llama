@@ -27,7 +27,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from ..runner import KVConfig, run_perplexity_kld, run_perplexity_kld_base
+from ..runner import (
+    KVConfig,
+    assert_corpus_matches,
+    corpus_identity,
+    run_perplexity_kld,
+    run_perplexity_kld_base,
+    write_corpus_sidecar,
+)
 
 
 @dataclass
@@ -41,6 +48,7 @@ class KLDResult:
     chunks: int
     ctx: int
     is_self_reference: bool      # True when candidate == reference; should give 0
+    corpus: Optional[dict] = None  # v0.1.3: {path, size_bytes, sha256_head}
 
 
 def _kld_to_score(kld: float) -> float:
@@ -78,8 +86,13 @@ def run_kld(
         os.unlink(path)  # llama-perplexity creates it itself
         base_path = Path(path)
         cleanup_base = True
+    else:
+        # User-supplied base — verify it was built from the same corpus.
+        # No-op if no sidecar exists (treat as user knows best).
+        assert_corpus_matches(base_path, corpus)
 
     is_self_ref = (reference_kv.label() == candidate_kv.label())
+    cleanup_sidecar = None
 
     try:
         if progress:
@@ -90,6 +103,10 @@ def run_kld(
             base_path=base_path, chunks=chunks, ctx=ctx,
             n_gpu_layers=n_gpu_layers,
         )
+        # v0.1.3: write a sidecar recording the corpus identity. A later
+        # run that points --kl-divergence-base at this file will be
+        # rejected if --corpus differs.
+        cleanup_sidecar = write_corpus_sidecar(base_path, corpus)
 
         if progress:
             print(f"  [2/2] Scoring candidate: {candidate_kv.label()}", flush=True)
@@ -109,11 +126,20 @@ def run_kld(
             chunks=chunks,
             ctx=ctx,
             is_self_reference=is_self_ref,
+            corpus=corpus_identity(corpus),
         )
     finally:
         if cleanup_base and base_path.exists():
             try:
                 base_path.unlink()
+            except OSError:
+                pass
+        # Sidecar lives next to the base file: if we deleted the base, drop
+        # the sidecar too. If we kept the base (user-supplied), keep the
+        # sidecar so the next run can verify against it.
+        if cleanup_base and cleanup_sidecar is not None and cleanup_sidecar.exists():
+            try:
+                cleanup_sidecar.unlink()
             except OSError:
                 pass
 

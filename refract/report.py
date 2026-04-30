@@ -113,6 +113,13 @@ def text_report(
     lines.append(
         f"   mean prefix agreement      : {gtm.mean_prefix_agreement_length:5.1f} tokens"
     )
+    lines.append(
+        f"   mean cand / ref length     : {gtm.mean_cand_length:5.1f} / "
+        f"{gtm.mean_ref_length:5.1f} tokens"
+    )
+    if gtm.notes:
+        for n in gtm.notes:
+            lines.append(_c("33", f"   NOTE: {n}"))
 
     # KLD diagnostics
     lines.append("")
@@ -161,7 +168,7 @@ def json_report(
     # `composite_detail` for diagnostics.
     composite_scalar = composite_dict.pop("composite")
     return {
-        "schema": "refract.report.v0.1.1",
+        "schema": "refract.report.v0.1.3",
         "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         "model": model,
         "reference": reference_label,

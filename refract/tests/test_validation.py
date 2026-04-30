@@ -124,3 +124,28 @@ def test_gemma_q8_turbo4_off_is_degraded():
         f"KLD score {kld.score:.2f} unexpectedly high; paper measured "
         f"~1.7 nats KLD which should map to KLD_score≈17.6."
     )
+
+    # v0.1.3 GTM sanity assertions. The v0.1 banner-comparing bug would
+    # have produced full_match_rate around 0.33-0.57 with identical "ref"
+    # text across all prompts. These checks catch that class of failure
+    # even before composite is computed.
+    assert gtm.full_match_rate < 1.0, (
+        "GTM full_match_rate == 1.0 on a known-degraded config — "
+        "different prompts shouldn't all match the reference. "
+        "Likely a banner-comparison or empty-output bug."
+    )
+    assert gtm.mean_prefix_agreement_length > 0, (
+        "GTM mean_prefix_agreement_length == 0 — both ref and cand are "
+        "empty after noise stripping. The runner is broken."
+    )
+    # At least 3 prompts must have distinct ref text. If the runner is
+    # capturing llama-cli's help banner as the "completion" again, every
+    # prompt will get the same captured text.
+    refs = [p.get("ref", "") for p in gtm.per_prompt]
+    distinct_refs = len(set(refs))
+    assert distinct_refs >= 3, (
+        f"Only {distinct_refs} distinct reference texts across "
+        f"{len(refs)} prompts — looks like the runner is capturing the "
+        f"same noise (banner?) on every call. v0.1.1 banner-comparing bug "
+        f"regression."
+    )

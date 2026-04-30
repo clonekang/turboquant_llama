@@ -1,4 +1,4 @@
-# REFRACT v0.1
+# REFRACT v0.1.3
 
 **REF**erence-anchored **R**obust **A**cid-test for **C**ompressed **T**ransformers.
 
@@ -15,8 +15,13 @@ Two of the four planned axes:
 
 | Axis | What it measures | Scoring |
 |------|------------------|---------|
-| **A — GTM** (Greedy Trajectory Match) | For K diverse prompts, do the reference and candidate produce identical greedy completions? | `100 * full_match_rate` |
+| **A — GTM** (Greedy Trajectory Match) | For K diverse prompts, what fraction of the candidate's model-tokenized completion matches the reference? | `100 * mean_prefix_agreement_length / mean_cand_length` |
 | **B — KLD@D** (KL Divergence vs reference, corpus proxy) | Mean KL divergence between candidate and reference distributions, via `llama-perplexity --kl-divergence`. | `100 * exp(-mean_kld_nats)` |
+
+GTM tokens come from `llama-tokenize` against the model's own vocab
+(v0.1.2+), and the score is normalized by the candidate's actual
+retokenized length (v0.1.3) so detokenize→retokenize inflation can't
+clip the score.
 
 Composite: `REFRACT = harmonic_mean(GTM, KLD)` clipped to `[0, 100]`.
 
@@ -176,9 +181,17 @@ refract/
   prompts/
     v0.1.jsonl              # 30 CC0 prompts
   tests/
-    test_unit.py            # math + parser tests, no subprocess
-    test_validation.py      # paper-cell reproduction (integration)
+    test_unit.py                  # math + KVConfig parsers (14 tests)
+    test_strip_noise.py           # runner._strip_noise pinning (5 tests)
+    test_command_construction.py  # llama.cpp arg list pinning (4 tests)
+    test_tokenize_to_ids.py       # llama-tokenize parser (5 tests)
+    test_kld_regex.py             # llama-perplexity output parser (6 tests)
+    test_report_json_layout.py    # JSON schema pinning (5 tests)
+    test_corpus_identity.py       # corpus sidecar machinery (5 tests)
+    test_validation.py            # paper-cell reproduction (integration)
   README.md
+  LIMITATIONS.md          # v0.1.3 limitations shipped with this release
+  CHANGELOG.md            # reverse-chronological history
 ```
 
 ## v0.2 roadmap (deferred — explicitly NOT in v0.1)
@@ -195,13 +208,9 @@ refract/
 - **Token-level diff via `llama-tokenize`** instead of whitespace split, so
   GTM diff positions match real BPE/SP token indices.
 
-## Known limitations of v0.1
+## Known limitations
 
-- KLD axis is a corpus proxy, not true trajectory KLD. Acknowledged TODO in
-  `axes/kld.py`.
-- GTM diff is whitespace-tokenised. Acknowledged TODO in `axes/gtm.py`.
-- We strip llama-cli noise patterns by regex; new noise lines from a future
-  llama.cpp release would slip through. Add to `_NOISE_PATTERNS` in
-  `runner.py` if you see them.
-- Floor is checked at composite level (≥ 99.5). Per-axis floor is implied
-  but not separately reported. Consider adding for v0.2.
+See [`LIMITATIONS.md`](LIMITATIONS.md) for the full list shipped with
+v0.1.3 (detokenize→retokenize gap, corpus-anchored KLD, provisional
+bands, single platform tested, GTM conflates divergence with EOS
+truncation, and the v0.1.3 fail-loud removal of the whitespace fallback).

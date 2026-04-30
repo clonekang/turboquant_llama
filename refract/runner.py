@@ -10,6 +10,8 @@ Configuration:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -263,7 +265,7 @@ def run_completion(
 _PPL_RE = re.compile(r"Final estimate:\s*PPL\s*=\s*([0-9.]+)")
 _KLD_MEAN_RE = re.compile(r"Mean\s+KLD:\s*([0-9.+\-eE]+)")
 _RMS_DP_RE = re.compile(r"RMS Δp:\s*([0-9.]+)\s*%", re.UNICODE)
-_TOPP_RE = re.compile(r"Same top-?p:\s*([0-9.]+)\s*%")
+_TOPP_RE = re.compile(r"Same\s+top[-\s]?p:\s*([0-9.]+)\s*%")
 
 
 def run_perplexity_kld_base(
@@ -375,6 +377,93 @@ def run_perplexity_kld(
 def _first_float(pattern: re.Pattern, text: str) -> Optional[float]:
     m = pattern.search(text)
     return float(m.group(1)) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Corpus identity (v0.1.3) — record what the KLD axis was scored against
+# ---------------------------------------------------------------------------
+
+
+# Sample size for corpus SHA. We hash the first MiB rather than the whole
+# file because corpora can be hundreds of MB and this code runs every score.
+# A 1MiB head-hash is enough to detect "wrong corpus passed" while staying
+# cheap. If the user really swaps the tail of a giant corpus the check will
+# miss it — that's a known limitation, not a security feature.
+CORPUS_HASH_BYTES = 1024 * 1024
+
+
+def corpus_identity(corpus: Path) -> dict:
+    """Return ``{path, size_bytes, sha256_head}`` for ``corpus``.
+
+    Used to (a) record corpus identity in JSON output and (b) reject KLD
+    scoring when a candidate's base file was built from a different corpus.
+    """
+    p = Path(corpus)
+    size = p.stat().st_size
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        h.update(f.read(CORPUS_HASH_BYTES))
+    return {
+        "path": str(p),
+        "size_bytes": size,
+        "sha256_head": h.hexdigest(),
+        "sha256_head_bytes": min(size, CORPUS_HASH_BYTES),
+    }
+
+
+def write_corpus_sidecar(base_path: Path, corpus: Path) -> Path:
+    """Write a ``<base>.corpus.json`` sidecar recording corpus identity.
+
+    Called when a KLD base file is built so a later candidate run can verify
+    it's scoring against a base built from the same corpus.
+    """
+    sidecar = Path(str(base_path) + ".corpus.json")
+    sidecar.write_text(json.dumps(corpus_identity(corpus), indent=2))
+    return sidecar
+
+
+def read_corpus_sidecar(base_path: Path) -> Optional[dict]:
+    """Read the corpus identity sidecar for a base file. Returns None if absent."""
+    sidecar = Path(str(base_path) + ".corpus.json")
+    if not sidecar.exists():
+        return None
+    try:
+        return json.loads(sidecar.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def assert_corpus_matches(base_path: Path, corpus: Path) -> None:
+    """Verify ``corpus`` matches the identity sidecar for ``base_path``.
+
+    No-op if no sidecar exists (base was built outside REFRACT, e.g.
+    user-supplied via --kl-divergence-base). Raises RuntimeError on
+    mismatch — rationale: silently scoring against a base from a different
+    corpus produces meaningless KLD numbers and is the kind of foot-gun
+    that fail-loud is meant to catch.
+    """
+    expected = read_corpus_sidecar(base_path)
+    if expected is None:
+        return  # no sidecar, can't verify; treat as user knows best
+    actual = corpus_identity(corpus)
+    mismatched = []
+    if expected.get("sha256_head") != actual["sha256_head"]:
+        mismatched.append("sha256_head")
+    if expected.get("size_bytes") != actual["size_bytes"]:
+        mismatched.append("size_bytes")
+    if mismatched:
+        raise RuntimeError(
+            f"corpus identity mismatch on {mismatched}: KLD base file "
+            f"{base_path} was built from\n  {expected.get('path')!r} "
+            f"(size={expected.get('size_bytes')}, "
+            f"sha256_head={expected.get('sha256_head')[:16]}…)\n"
+            f"but you're now scoring against\n  {actual['path']!r} "
+            f"(size={actual['size_bytes']}, "
+            f"sha256_head={actual['sha256_head'][:16]}…).\n"
+            f"Refusing to compute KLD against a different corpus — the "
+            f"resulting nats would be meaningless. Rebuild the base or "
+            f"point --corpus at the original file."
+        )
 
 
 # ---------------------------------------------------------------------------
