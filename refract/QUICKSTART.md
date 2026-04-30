@@ -1,15 +1,27 @@
 # REFRACT QUICKSTART
 
+> ## Runtime expectations (7B Q8 model on Apple Silicon)
+>
+> | Mode | Axes | Time | When |
+> |---|---|---|---|
+> | `selftest` | preflight only | **~1s static / ~30s with `--model`** | Before your first real run. Free. |
+> | **`score` (default)** | Trajectory + KLD | **~5–7 min** | Most runs. Go/no-go on a candidate KV config. |
+> | `score --full` | + R-NIAH + PLAD | ~25–30 min | Pre-ship audit. Adds long-context retrieval + brittleness. |
+> | `repeatability --runs 4` | repeats default | 4× default | Sanity-check reproducibility. |
+>
+> **Default is quick.** Most users should never wait 30 minutes unless
+> they're explicitly running `--full` for a ship-decision audit.
+>
+> ---
+
 > **⚠️ ALPHA — for initial testing and feedback only.**
 >
 > The framework works end-to-end and produces real, useful numbers
 > today, but:
 > - **Setup is manual** — clone the repo, build llama.cpp / install
 >   mlx-lm yourself, fetch the corpus + prompts, edit paths in flags.
->   No `pip install refract` yet.
-> - **Proper packaging is coming** (PyPI, a `setup.sh` that builds
->   llama.cpp from a pinned commit, bundled prompts/corpus, an installable
->   CLI entry point). For now run via `python3 -m refract.cli`.
+>   No `pip install refract` yet (entry point is in pyproject as of
+>   v0.3.2; PyPI publish pending).
 > - **vLLM backend is a skeleton.** llama.cpp + MLX backends work.
 > - **Confidence guards exist but aren't exhaustive** — you may find
 >   edge cases. Please open an issue with the JSON.
@@ -20,7 +32,8 @@
 > we can fix. If you hit a wall, open an issue with your `selftest`
 > output and the JSON of the failing run.
 
-Goal: get from "git clone" to a real REFRACT score in under 30 minutes.
+Goal: get from "git clone" to a real REFRACT score in under **5–7 minutes**
+on the default (quick) mode.
 
 ## What REFRACT does (one paragraph)
 
@@ -52,15 +65,26 @@ You need at minimum:
   - For R-NIAH (full mode): a long-text haystack file (wikitext-2's
     `wiki.train.raw` works for cells up to 16K tokens).
 
-## Step 0 — preflight
+## Step 0 — preflight (~30 seconds)
 
+```bash
+# llama.cpp model (.gguf)
+python3 -m refract.cli selftest --backend auto --model /path/to/model.gguf
+
+# OR an MLX model (directory with config.json + model.safetensors)
+python3 -m refract.cli selftest --backend auto --model /path/to/mlx-model-dir/
+
+# Without --model: static checks only (~1 second)
+python3 -m refract.cli selftest
 ```
-python3 -m refract.cli selftest --backend auto --model /path/to/your.model
-```
+
+`--backend auto` infers from the path: `.gguf` → llamacpp; directory →
+mlx. Override with `--backend llamacpp|mlx|vllm` or set
+`REFRACT_BACKEND` env var.
 
 Verifies binaries, flags, env vars, and a tiny generation. If it bails,
-fix the reported issue before going further. Don't burn 30 minutes of a
-real run finding out your llama.cpp lacks turbo.
+fix the reported issue before going further. Don't burn a long run
+finding out your setup is broken.
 
 ## Step 1 — first quick score (5–7 min on a 7B Q8)
 

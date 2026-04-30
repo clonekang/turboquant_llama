@@ -107,7 +107,10 @@ def _hardware_metadata() -> dict:
                 capture_output=True, text=True, timeout=2,
             ).stdout.strip()
             if memsize:
-                info["ram_gb"] = round(int(memsize) / 1e9, 1)
+                # Use binary GiB (Apple's marketing convention) —
+                # 137438953472 bytes / 1024**3 = 128 GiB (exact),
+                # not 137.4 GB which is the misleading SI conversion.
+                info["ram_gb"] = round(int(memsize) / 1024**3, 1)
         except Exception:
             pass
     # Linux: chip from /proc/cpuinfo, RAM via /proc/meminfo
@@ -153,14 +156,15 @@ def _model_metadata(model_path: Path) -> dict:
     if not model_path.exists():
         return info
     if model_path.is_file():
-        info["size_gb"] = round(model_path.stat().st_size / 1e9, 2)
+        # Binary GiB — matches model-card conventions ("28 GB Q8_0").
+        info["size_gb"] = round(model_path.stat().st_size / 1024**3, 2)
         info["format"] = "gguf" if model_path.suffix == ".gguf" else "file"
     elif model_path.is_dir():
         total = 0
         for ext in ("*.safetensors", "*.bin", "*.npz"):
             for f in model_path.glob(ext):
                 total += f.stat().st_size
-        info["size_gb"] = round(total / 1e9, 2)
+        info["size_gb"] = round(total / 1024**3, 2)
         info["format"] = "directory"
         # Read HF/MLX config.json if present
         config_path = model_path / "config.json"

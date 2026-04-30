@@ -466,21 +466,28 @@ Run `refract score --help` for full options + usage examples.
 def _add_selftest_parser(sub):
     p = sub.add_parser(
         "selftest",
-        help="Run a 30-second preflight verifying setup before a real run.",
+        help="Preflight check before running score/repeatability.",
         description=(
-            "Verifies the environment is ready for REFRACT: checks "
-            "llama.cpp binaries (or mlx-lm import), required CLI flags "
-            "(--jinja, REFRACT_TRAJECTORY env), KV cache types compiled "
-            "in, model loadable, fp16-vs-fp16 floor sanity. Bails out "
-            "with a useful message on any failure so you don't burn 30 "
-            "minutes of a real run finding out llama.cpp lacks turbo."
+            "Verifies the environment is ready for REFRACT: binaries / "
+            "imports, required CLI flags (--jinja, REFRACT_TRAJECTORY env), "
+            "KV cache types compiled in, model loadable, fp16-vs-fp16 "
+            "sanity generation. Bails out with a useful message on any "
+            "failure so you don't burn a long run finding out your setup "
+            "is broken.\n\n"
+            "Tip: pass --model for a real generation probe (~10-30s "
+            "depending on model size). Without --model, only static "
+            "binary/import checks run (~1s)."
         ),
     )
     p.add_argument("--backend", choices=["auto", "llamacpp", "mlx", "vllm"],
-                   default="auto", help="Backend to test (default: auto).")
+                   default="auto",
+                   help="Backend to test. 'auto' picks llamacpp for .gguf "
+                        "models and mlx for directories. Override via "
+                        "REFRACT_BACKEND env.")
     p.add_argument("--model", type=Path, default=None,
-                   help="Optional small model to use for the floor smoke run. "
-                        "If omitted, only static checks run.")
+                   help="Optional model to use for a real generation probe. "
+                        "Accepts both .gguf files (llamacpp) and MLX model "
+                        "directories. If omitted, only static checks run.")
     return p
 
 
@@ -562,6 +569,7 @@ def _run_selftest(args) -> int:
             failures.append(f"model missing: {args.model}")
         else:
             print(f"\nProbing model: {args.model.name}")
+            gen_ok = False
             try:
                 result = backend.run_completion(
                     model=args.model,
@@ -572,19 +580,23 @@ def _run_selftest(args) -> int:
                 )
                 preview = (result.text or "").replace("\n", " ")[:80]
                 print(f"  ✓ generation works → {preview!r}")
+                gen_ok = True
             except Exception as e:
                 print(f"  ✗ generation failed: {e}")
                 failures.append(f"model generation: {e}")
-            # Thinking probe
-            try:
-                detected, markers = backend.detect_thinking_mode(model=args.model)
-                if detected:
-                    print(f"  ℹ thinking-mode detected (markers: {markers}). "
-                          "REFRACT will handle this automatically.")
-                else:
-                    print("  ✓ no thinking-mode markers (faster runs)")
-            except Exception as e:
-                warnings.append(f"thinking-mode probe failed: {e}")
+            # Thinking probe — only run if generation succeeded. If gen
+            # failed, the probe uses the same broken path and "no markers
+            # detected" would be misleading.
+            if gen_ok:
+                try:
+                    detected, markers = backend.detect_thinking_mode(model=args.model)
+                    if detected:
+                        print(f"  ℹ thinking-mode detected (markers: {markers}). "
+                              "REFRACT will handle this automatically.")
+                    else:
+                        print("  ✓ no thinking-mode markers (faster runs)")
+                except Exception as e:
+                    warnings.append(f"thinking-mode probe failed: {e}")
 
     # --- Summary ---
     print()

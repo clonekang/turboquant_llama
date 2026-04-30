@@ -2,7 +2,10 @@
 name = "turboquant"
 version = "0.1.0"
 description = "TurboQuant: KV cache compression via PolarQuant + QJL (ICLR 2026)"
-requires-python = ">=3.10"
+# REFRACT (refract/) works on Python 3.9+ thanks to
+# `from __future__ import annotations`; the rest of turboquant uses 3.10+
+# typing features. Lower the floor when REFRACT-only consumers complain.
+requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
@@ -16,6 +19,21 @@ dev = [
 bench = [
     "matplotlib",
 ]
+# REFRACT optional backend deps. Install with:
+#   pip install -e .[refract-mlx]    # MLX backend (Apple Silicon)
+#   pip install -e .[refract-vllm]   # vLLM backend (CUDA/ROCm; skeleton today)
+# The llama.cpp backend has no Python deps (subprocess-only); it requires the
+# llama.cpp binaries built separately. See refract/QUICKSTART.md.
+refract-mlx = [
+    "mlx>=0.20",
+    "mlx-lm>=0.31",  # qwen3_5 + gemma-4 support requires 0.31+
+]
+refract-vllm = [
+    "vllm>=0.5",
+]
+
+[project.scripts]
+refract = "refract.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["turboquant*", "refract*"]
