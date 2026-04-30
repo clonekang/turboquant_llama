@@ -248,7 +248,8 @@ def _badge(b: str, override_label: Optional[str] = None) -> str:
 
 def _meter(score: float, b: str) -> str:
     pct = max(0.0, min(100.0, float(score)))
-    cls = _BAND_CLASS.get(b, "gray")
+    # Empty band string ("") = explicit gray (used for low-confidence axes).
+    cls = _BAND_CLASS.get(b, "gray") if b else "gray"
     return (
         f'<div class="meter"><div class="fill" '
         f'style="width:{pct:.1f}%; background:var(--{cls});"></div></div>'
@@ -289,7 +290,8 @@ def _axis_letter_chip(letter: str) -> str:
     return f'<span class="letter">{_esc(letter)}</span>'
 
 
-def _stat_block(name: str, score: float, *, is_composite: bool = False) -> str:
+def _stat_block(name: str, score: float, *, is_composite: bool = False,
+                low_confidence: bool = False) -> str:
     b = band(score)
     cls = "stat composite" if is_composite else "stat"
     if is_composite:
@@ -305,11 +307,28 @@ def _stat_block(name: str, score: float, *, is_composite: bool = False) -> str:
             f'<div class="label"><span class="axis-letter">{_esc(letter)}</span>'
             f'{_esc(short)}</div>'
         )
-        value_html = f'<div class="value-row"><div class="value">{score:.2f}</div></div>'
+        # v0.3.3: when an axis flags itself low-confidence, the score is
+        # mathematically true but uninformative (e.g. R-NIAH=100 when base
+        # also fails everywhere — measures "candidate matches base", not
+        # real retrieval). Suppress the headline number and use "—" with
+        # the real value in a tooltip to discourage misreading.
+        if low_confidence:
+            value_html = (
+                f'<div class="value-row">'
+                f'<div class="value" style="color: var(--fg-faint);" '
+                f'title="raw score {score:.2f} — uninformative because base '
+                f'also fails at most cells">—</div></div>'
+            )
+        else:
+            value_html = f'<div class="value-row"><div class="value">{score:.2f}</div></div>'
+    if low_confidence:
+        badge = _badge("", "Low confidence")
+    else:
+        badge = _badge(b)
     return (
         f'<div class="{cls}">'
         f'{label_html}{value_html}'
-        f'<div class="badge-row">{_badge(b)}</div>'
+        f'<div class="badge-row">{badge}</div>'
         f'</div>'
     )
 
@@ -335,24 +354,61 @@ def _findings(diagnosis: list[str]) -> str:
     return f'<div class="findings">{"".join(items)}</div>'
 
 
-def _axis_row(name: str, score: float) -> str:
+def _axis_row(name: str, score: float, *, low_confidence: bool = False) -> str:
     b = band(score)
+    if low_confidence:
+        badge = _badge("", "Low confidence")
+        meter_b = ""  # gray fill
+        score_html = (
+            f'<div class="score" style="color: var(--fg-faint);" '
+            f'title="raw score {score:.2f} — uninformative">—</div>'
+        )
+    else:
+        badge = _badge(b)
+        meter_b = b
+        score_html = f'<div class="score">{score:.2f}</div>'
     return (
         f'<div class="axis-row">'
         f'<div class="key">{_axis_letter_chip(_AXIS_LETTER.get(name, ""))}'
         f'{_esc(_AXIS_SHORT.get(name, name))}</div>'
         f'<div class="name">{_esc(_AXIS_FULL.get(name, name))}'
         f'<span class="desc">{_esc(_AXIS_PROSE.get(name, ""))}</span></div>'
-        f'<div class="score">{score:.2f}</div>'
-        f'<div class="badge-cell">{_badge(b)}</div>'
-        f'{_meter(score, b)}'
+        f'{score_html}'
+        f'<div class="badge-cell">{badge}</div>'
+        f'{_meter(score, meter_b)}'
         f'</div>'
     )
+
+
+def _rniah_low_confidence(rniah: RNIAHResult) -> bool:
+    """Mirror of the JSON `confidence: low` guard: True when base_acc
+    averaged across cells is below 0.2 (model isn't engaging the task)."""
+    if not rniah.cells:
+        return False
+    base_avg = sum(c.base_acc for c in rniah.cells) / len(rniah.cells)
+    return base_avg < 0.2
 
 
 def _rniah_matrix_detail(rniah: RNIAHResult) -> str:
     if not rniah.cells:
         return ""
+    low_conf = _rniah_low_confidence(rniah)
+    warning_html = ""
+    if low_conf:
+        base_avg = sum(c.base_acc for c in rniah.cells) / len(rniah.cells)
+        warning_html = (
+            '<div class="summary-box amber" style="margin-bottom: 14px;">'
+            '<div class="icon">!</div>'
+            '<div class="body">'
+            '<div class="title">Low confidence — score is noise floor.</div>'
+            f'<div class="desc">fp16 baseline retrieves at only '
+            f'{base_avg:.0%} of cells on average. With the reference '
+            f'failing this often, R-NIAH = {rniah.score:.2f} measures '
+            f'"candidate matches base" rather than real retrieval '
+            f'capability. Try lower --rniah-up-to or a model with '
+            f'longer effective context.</div>'
+            '</div></div>'
+        )
     lengths = sorted({c.length for c in rniah.cells})
     positions = sorted({c.position for c in rniah.cells})
     head = "<tr><th>length \\ position</th>" + "".join(
@@ -396,6 +452,7 @@ def _rniah_matrix_detail(rniah: RNIAHResult) -> str:
     return (
         f'<div class="axis-detail-row">'
         f'<div class="detail-inner">'
+        f'{warning_html}'
         f'<div class="detail-label">R-NIAH per-cell '
         f'<span class="legend">cand / base retrieval rate · '
         f'green = match · red = candidate worse · '
@@ -1002,12 +1059,17 @@ def html_report(
         ),
     ]
     # Actual composite block (overrides the placeholder)
+    rniah_low_conf = (rniah is not None and _rniah_low_confidence(rniah))
+
     stats = []
     stats.append(_stat_block("composite", composite.composite, is_composite=True))
     stats.append(_stat_block(axis_a_key, composite.gtm_score))
     stats.append(_stat_block("kld", composite.kld_score))
     if composite.rniah_score is not None:
-        stats.append(_stat_block("rniah", composite.rniah_score))
+        stats.append(_stat_block(
+            "rniah", composite.rniah_score,
+            low_confidence=rniah_low_conf,
+        ))
     if composite.plad_score is not None:
         stats.append(_stat_block("plad", composite.plad_score))
 
@@ -1015,7 +1077,9 @@ def html_report(
     axis_rows = [_axis_row(axis_a_key, composite.gtm_score),
                  _axis_row("kld", composite.kld_score)]
     if composite.rniah_score is not None and rniah is not None:
-        axis_rows.append(_axis_row("rniah", composite.rniah_score))
+        axis_rows.append(_axis_row(
+            "rniah", composite.rniah_score, low_confidence=rniah_low_conf,
+        ))
         axis_rows.append(_rniah_matrix_detail(rniah))
     if composite.plad_score is not None and plad is not None:
         axis_rows.append(_axis_row("plad", composite.plad_score))
@@ -1120,7 +1184,7 @@ def html_report(
     <div class="foot-info">
       <div class="what">
         <strong style="color: var(--fg); font-weight: 600;">What is this?</strong>
-        REFRACT is a quantization audit framework. The repository contains documentation, the motivation paper, and guidance on interpreting these scores.
+        REFRACT — <em>REFerence-anchored Robust Acid-test for Compressed Transformers</em> — is a quantization audit framework that scores how faithfully a quantized KV-cache config preserves the model's own fp16 behaviour. The repository contains documentation, the motivation paper, and guidance on interpreting these scores.
       </div>
       <a class="docs-link" href="https://github.com/TheTom/turboquant_plus/tree/main/refract" target="_blank" rel="noopener">
         github.com/TheTom/turboquant_plus

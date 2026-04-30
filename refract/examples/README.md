@@ -18,7 +18,7 @@ KV config, your framework is wired up correctly.
 | `clean-q8q8-mistral24b` | ~91 | EXCELLENT | Mistral-Small-24B Q4_K_M with q8/turbo4 KV. Faithful quant on a robust model. Use as a "what success looks like" anchor. |
 | `degraded-qwen7b` | ~76 | DEGRADED | Qwen2.5-7B Q8 with q8/turbo4 KV. Trajectory low (55) and PLAD low (76); KLD high (98). Per-token decode drift + brittleness, retrieval intact. |
 | `distribution-broken-gemma26b` | ~29 | FAIL | gemma-4-26B-A4B Q8 with q8/turbo4 KV. Trajectory + KLD both ~17 (1.74 nats), R-NIAH 100, PLAD 78. The "distribution wrecked but reasoning intact" pattern. |
-| `catastrophic-symturbo` | ~19 | FAIL | gemma-4-26B-A4B Q8 with **symmetric** turbo4/turbo4 (the deliberately-broken negative control). Trajectory 9.74, KLD 11.84 (2.13 nats). If you run this and don't get FAIL, your framework setup has a problem. |
+| `catastrophic-symturbo` | ~11 | FAIL | gemma-4-26B-A4B Q8 with **symmetric** turbo4/turbo4 (the deliberately-broken negative control). Trajectory 3.93, KLD 11.84 (2.13 nats). If you run this and don't get FAIL, your framework setup has a problem. |
 
 ## Sanity reading
 

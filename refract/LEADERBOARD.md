@@ -51,7 +51,7 @@ expect ±2 composite points of methodology drift.
 
 | Model | Candidate KV | Composite | Band | Notes |
 |-------|--------------|-----------|------|-------|
-| Gemma-4-26B-A4B Q8 | **turbo4/turbo4 (symmetric)** | **~19** | FAIL | Deliberately broken config from the paper. KLD = 2.13 nats. If your run on this combo does NOT FAIL, your framework setup has a problem. |
+| Gemma-4-26B-A4B Q8 | **turbo4/turbo4 (symmetric)** | **~11** | FAIL | Deliberately broken config from the paper. KLD = 2.13 nats, Trajectory = 3.93. If your run on this combo does NOT FAIL, your framework setup has a problem. |
 
 ## How to read the rankings
 

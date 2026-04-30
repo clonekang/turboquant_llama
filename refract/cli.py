@@ -778,7 +778,10 @@ def _run_compare(args) -> int:
                 return f"{a[k]['score']:.2f}"
             except Exception:
                 return "—"
-        print(f"{r['label'][:32]:<32} {r['composite']:>7.2f} {r['band']:<10} "
+        comp_val = r["composite"]
+        comp_str = f"{comp_val:>7.2f}" if isinstance(comp_val, (int, float)) else f"{'—':>7}"
+        band_str = r["band"] if isinstance(r["band"], str) else "—"
+        print(f"{r['label'][:32]:<32} {comp_str} {band_str:<10} "
               f"{fmt(a, 'gtm'):>7} {fmt(a, 'kld'):>7} "
               f"{fmt(a, 'rniah'):>7} {fmt(a, 'plad'):>7}")
     print()

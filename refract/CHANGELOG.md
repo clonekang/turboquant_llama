@@ -327,18 +327,18 @@ Result on the same scoring framework:
 
 | Surface     | Score  | Band  |
 |-------------|--------|-------|
-| Trajectory  | 9.74   | FAIL  |
+| Trajectory  | 3.93   | FAIL  |
 | KLD@D       | 11.84  | FAIL  (mean_kld = 2.133 nats) |
-| R-NIAH      | 100.00 | EXCELLENT (refusal artifact, see v0.2.1) |
-| PLAD        | 72.88  | DEGRADED |
-| **Composite** | **~19** | **FAIL** |
+| R-NIAH      | 100.00 | EXCELLENT (real signal; needle wording fixed in v0.2.1) |
+| PLAD        | 72.21  | DEGRADED (paraphrase NaN -> partial confidence) |
+| **Composite** | **~11** | **FAIL** |
 
 Comparison on the same model, asymmetric vs symmetric turbo:
 
 | Candidate                  | Composite | KLD nats | Trajectory |
 |---------------------------|-----------|----------|------------|
 | ctk=q8_0,ctv=turbo4 (asym) | 29 FAIL   | 1.738    | 17.32 |
-| ctk=turbo4,ctv=turbo4 (sym)| 19 FAIL   | 2.133    | 9.74  |
+| ctk=turbo4,ctv=turbo4 (sym)| 11 FAIL   | 2.133    | 3.93  |
 
 Symmetric is empirically worse than asymmetric on every distribution-level
 surface, which matches the paper's analytical result (rotation collisions
@@ -348,9 +348,7 @@ distinguishes the two correctly.
 **Conclusion:** the framework's per-axis crater pattern + composite FAIL
 behaviour on a known-catastrophic config is consistent with the paper's
 predictions, so a clean PASS in the matrix is a real signal rather than a
-specification artifact. (R-NIAH refusal contamination is an axis-level
-calibration problem, addressed in v0.2.1; it does not affect the composite
-ranking.)
+specification artifact.
 
 ---
 

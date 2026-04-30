@@ -256,8 +256,15 @@ def text_report(
         lines.append(" PLAD diagnostics")
         lines.append(f"   prompts × perturbations    : "
                      f"{plad.n_prompts} × {plad.n_perturbations}")
+        import math as _math
         for pert, score in plad.per_perturbation_score.items():
-            ptag = _c(_band_color(band(score)), f"{score:6.2f} {band(score):<9}")
+            if not isinstance(score, (int, float)) or _math.isnan(score):
+                # Skipped perturbation (no eligible word, no synonym match).
+                # Display as "skipped" rather than "nan FAIL" which would
+                # misread as a failure rather than an inapplicable test.
+                ptag = _c("33", f"{'skipped':>6} {'n/a':<9}")
+            else:
+                ptag = _c(_band_color(band(score)), f"{score:6.2f} {band(score):<9}")
             lines.append(f"   {pert:<10} : {ptag}")
         if plad.notes:
             for n in plad.notes:

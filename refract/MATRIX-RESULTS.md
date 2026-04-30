@@ -50,7 +50,7 @@ Total runtime: 7336s (2h 2min) on M5 Max 128GB.
    Mostly small (±4) but qwen3.5-2B dropped 7.3 points.
 4. **Two models had zero change** (phi-4, Mistral-24B). They engaged in
    raw mode already.
-5. **Negative control (sym turbo @ 19 FAIL) and positive controls hold**
+5. **Negative control (sym turbo @ 11 FAIL) and positive controls hold**
    across methodology versions. Framework credibility is rooted in
    per-axis bit-exactness on Metal, not the chat-template fix.
 
@@ -123,11 +123,11 @@ the paper; rotation collisions on both K and V)
 
 | Axis       | Score  | Band      |
 |------------|--------|-----------|
-| Trajectory |   9.74 | FAIL      |
+| Trajectory |   3.93 | FAIL      |
 | KLD@D      |  11.84 | FAIL  (2.1334 nats) |
-| R-NIAH     | 100.00 | EXCELLENT (refusal artifact, see v0.2.1) |
-| PLAD       |  72.88 | DEGRADED  |
-| **Composite** | **~19** | **FAIL** |
+| R-NIAH     | 100.00 | EXCELLENT (real signal post v0.2.1 needle fix) |
+| PLAD       |  72.21 | DEGRADED (paraphrase NaN -> partial) |
+| **Composite** | **~11** | **FAIL** |
 
 Runtime: 1161s (19 min).
 
@@ -136,7 +136,7 @@ Runtime: 1161s (19 min).
 | Candidate                     | Composite | KLD nats | Trajectory |
 |-------------------------------|-----------|----------|------------|
 | ctk=q8_0,ctv=turbo4 (asym)    | ~29 FAIL  | 1.738    | 17.32      |
-| ctk=turbo4,ctv=turbo4 (sym)   | ~19 FAIL  | 2.133    | 9.74       |
+| ctk=turbo4,ctv=turbo4 (sym)   | ~11 FAIL  | 2.133    | 3.93       |
 
 Symmetric is empirically worse than asymmetric on every distribution-level
 surface, matching the paper's analytical prediction (rotation collisions
