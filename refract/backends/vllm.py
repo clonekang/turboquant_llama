@@ -78,18 +78,38 @@ def _max_model_len_default() -> int:
 
 
 def _get_llm(model: Path, kv_dtype: str, max_model_len: int) -> Any:
-    """Cache LLM instances per (model, kv_dtype, max_model_len)."""
+    """Cache one LLM instance at a time (per process).
+
+    Hybrid models like Qwen3.6-35B-A3B don't fit two simultaneous LLM
+    instances on a single accelerator (model weights + Mamba state ~120GB
+    × 2 > 192GB). When the requested key differs from the cached one, the
+    cached LLM is evicted before loading the new one.
+    """
     key = (str(model), kv_dtype, max_model_len)
     if key in _VLLM_LLM_CACHE:
         return _VLLM_LLM_CACHE[key]
+    if _VLLM_LLM_CACHE:
+        # Evict any prior LLMs to free GPU memory before loading a new one.
+        import gc
+        for k in list(_VLLM_LLM_CACHE.keys()):
+            del _VLLM_LLM_CACHE[k]
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
     from vllm import LLM  # type: ignore[import-not-found]
-    gpu_mem = float(os.environ.get("REFRACT_VLLM_GPU_MEMORY_UTILIZATION", "0.45"))
+    gpu_mem = float(os.environ.get("REFRACT_VLLM_GPU_MEMORY_UTILIZATION", "0.85"))
+    max_num_seqs = int(os.environ.get("REFRACT_VLLM_MAX_NUM_SEQS", "32"))
     llm = LLM(
         model=str(model),
         dtype="bfloat16",
         kv_cache_dtype=kv_dtype,
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_mem,
+        max_num_seqs=max_num_seqs,
         disable_log_stats=True,
         enable_prefix_caching=False,
         max_num_batched_tokens=max(2048, max_model_len // 4),

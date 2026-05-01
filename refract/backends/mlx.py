@@ -280,14 +280,17 @@ class MLXBackend(Backend):
             """Run forward with the requested KV bits; return logits [T, V]."""
             inp = mx.array(chunk_tokens)[None, :]
             prompt_cache = cache_mod.make_prompt_cache(m)
-            logits = m(inp, cache=prompt_cache)
             if kv_bits is not None:
-                cache_mod.maybe_quantize_kv_cache(
+                # mlx_lm.generate.maybe_quantize_kv_cache mutates the list in
+                # place; mlx_lm 0.31.x moved it out of mlx_lm.models.cache.
+                from mlx_lm.generate import maybe_quantize_kv_cache as _mqc
+                _mqc(
                     prompt_cache,
                     quantized_kv_start=0,
                     kv_group_size=64,
                     kv_bits=kv_bits,
                 )
+            logits = m(inp, cache=prompt_cache)
             return logits[0]  # squeeze batch
 
         total_kl = 0.0
