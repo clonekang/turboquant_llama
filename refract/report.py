@@ -338,6 +338,14 @@ def json_report(
     composite_band = composite_dict.pop("band")
     def _band_or_skipped(s):
         return band(s) if s is not None else "skipped"
+    # When an axis was skipped, the underlying result dataclass still has a
+    # stub score=100. Null out the JSON 'score' field so downstream readers
+    # (compare, leaderboards, paper tables) don't pick up the stub as real.
+    if composite.gtm_score is None:
+        gtm_dict["score"] = None
+    kld_dict = asdict(kld)
+    if composite.kld_score is None:
+        kld_dict["score"] = None
     axes_block: dict = {
         "gtm": {
             **gtm_dict,
@@ -346,7 +354,7 @@ def json_report(
             "description": _AXIS_PROSE["gtm"],
         },
         "kld": {
-            **asdict(kld),
+            **kld_dict,
             "band": _band_or_skipped(composite.kld_score),
             "skipped": composite.kld_score is None,
             "description": _AXIS_PROSE["kld"],

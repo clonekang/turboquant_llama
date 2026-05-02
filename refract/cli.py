@@ -808,7 +808,10 @@ def _run_compare(args) -> int:
         a = r["axes"]
         def fmt(d, k):
             try:
-                return f"{a[k]['score']:.2f}"
+                ax = a[k]
+                if ax.get("skipped") or ax.get("score") is None:
+                    return "skip"
+                return f"{ax['score']:.2f}"
             except Exception:
                 return "—"
         comp_val = r["composite"]
