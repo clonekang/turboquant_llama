@@ -1,5 +1,5 @@
 """Tests for refract.backends: registry, base ABC defaults, llamacpp adapter,
-mlx KV translation + import-gate, vllm skeleton."""
+mlx KV translation + import-gate, vllm + sglang surface checks."""
 
 from __future__ import annotations
 
@@ -16,7 +16,10 @@ from refract.backends.base import (
     TrajectoryResult,
 )
 from refract.backends.llamacpp import LlamaCppBackend
+from refract.backends.sglang import SGLangBackend
 from refract.backends.vllm import VLLMBackend
+from refract.backends.vllm import _kv_str_to_vllm_dtype
+from refract.backends.sglang import _validate_kv_str
 
 
 # --- registry -------------------------------------------------------------
@@ -72,31 +75,91 @@ def test_auto_backend_env_override_takes_precedence(tmp_path, monkeypatch):
     assert bk.name == "vllm"
 
 
-# --- vllm skeleton --------------------------------------------------------
+# --- vllm backend (production v0.3.2.1) -----------------------------------
 
 
-def test_vllm_run_completion_raises_not_implemented():
+def test_vllm_kv_str_to_dtype_known_mappings():
+    """Each KV config the score axes will pass should round-trip through the
+    vllm backend's translation table."""
+    assert _kv_str_to_vllm_dtype("ctk=f16,ctv=f16") == "auto"
+    assert _kv_str_to_vllm_dtype("ctk=bf16,ctv=bf16") == "auto"
+    assert _kv_str_to_vllm_dtype("ctk=q8_0,ctv=q8_0") == "fp8_e4m3"
+
+
+def test_vllm_kv_str_to_dtype_turboquant_presets():
+    """TurboQuant + TQ+ presets resolve to the matching vllm kv_cache_dtype."""
+    assert _kv_str_to_vllm_dtype("ctk=q8_0,ctv=turbo4") == "turboquant_k8v4"
+    assert _kv_str_to_vllm_dtype("ctk=turbo4,ctv=turbo4") == "turboquant_4bit_nc"
+    assert _kv_str_to_vllm_dtype("ctk=turbo3,ctv=turbo3") == "turboquant_3bit_nc"
+
+
+def test_vllm_kv_str_unknown_raises_capability():
+    with pytest.raises(BackendCapabilityError) as exc:
+        _kv_str_to_vllm_dtype("ctk=somethingweird,ctv=alsoweird")
+    assert "no mapping" in str(exc.value).lower()
+
+
+def test_vllm_run_completion_signature_takes_kv_config():
+    """v0.3.2.1+: run_completion takes the same kw-only contract as the
+    base class. We don't actually invoke vllm here (no GPU in test); we
+    just confirm the method accepts the contract args."""
+    import inspect
+    sig = inspect.signature(VLLMBackend.run_completion)
+    expected = {"model", "prompt", "kv_config_str"}
+    assert expected.issubset(set(sig.parameters)), (
+        f"VLLMBackend.run_completion missing required kw args: "
+        f"{expected - set(sig.parameters)}"
+    )
+
+
+def test_vllm_methods_present():
     bk = VLLMBackend()
-    with pytest.raises(NotImplementedError):
-        bk.run_completion()
+    for meth in ("run_completion", "run_completion_trajectory",
+                 "run_kld", "tokenize_to_ids", "model_metadata"):
+        assert callable(getattr(bk, meth)), f"VLLMBackend missing {meth}"
 
 
-def test_vllm_run_completion_trajectory_raises_not_implemented():
-    bk = VLLMBackend()
-    with pytest.raises(NotImplementedError):
-        bk.run_completion_trajectory()
+# --- sglang backend (production v0.3.2.1) ---------------------------------
 
 
-def test_vllm_run_kld_raises_not_implemented():
-    bk = VLLMBackend()
-    with pytest.raises(NotImplementedError):
-        bk.run_kld()
+def test_sglang_get_backend_registers():
+    assert isinstance(get_backend("sglang"), SGLangBackend)
 
 
-def test_vllm_tokenize_to_ids_raises_not_implemented():
-    bk = VLLMBackend()
-    with pytest.raises(NotImplementedError):
-        bk.tokenize_to_ids()
+def test_sglang_kv_str_supported_configs():
+    """SGLang accepts BF16 and fp8_e4m3 KV. f16/bf16 maps to bf16."""
+    assert _validate_kv_str("ctk=f16,ctv=f16") == ("f16", "f16")
+    assert _validate_kv_str("ctk=bf16,ctv=bf16") == ("bf16", "bf16")
+    assert _validate_kv_str("ctk=q8_0,ctv=q8_0") == ("q8_0", "q8_0")
+
+
+def test_sglang_kv_str_rejects_turboquant():
+    """SGLang has no TurboQuant KV path; the backend rejects loudly."""
+    with pytest.raises(BackendCapabilityError) as exc:
+        _validate_kv_str("ctk=turbo4,ctv=turbo4")
+    assert "turboquant" in str(exc.value).lower()
+
+
+def test_sglang_run_kld_requires_dual_urls(monkeypatch):
+    """run_kld needs two simultaneous SGLang servers (KV dtype is fixed
+    at server launch); raise loudly if env vars aren't set."""
+    monkeypatch.delenv("REFRACT_SGLANG_REF_URL", raising=False)
+    monkeypatch.delenv("REFRACT_SGLANG_CAND_URL", raising=False)
+    bk = SGLangBackend()
+    with pytest.raises(BackendCapabilityError) as exc:
+        bk.run_kld(
+            model=Path("/tmp/x"), corpus=Path("/tmp/x"),
+            ref_kv_str="ctk=f16,ctv=f16",
+            cand_kv_str="ctk=q8_0,ctv=q8_0",
+        )
+    assert "REFRACT_SGLANG_REF_URL" in str(exc.value)
+
+
+def test_sglang_methods_present():
+    bk = SGLangBackend()
+    for meth in ("run_completion", "run_completion_trajectory",
+                 "run_kld", "tokenize_to_ids", "model_metadata"):
+        assert callable(getattr(bk, meth)), f"SGLangBackend missing {meth}"
 
 
 # --- base.Backend default detect_thinking_mode ----------------------------

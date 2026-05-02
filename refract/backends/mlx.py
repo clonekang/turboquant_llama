@@ -281,9 +281,12 @@ class MLXBackend(Backend):
             inp = mx.array(chunk_tokens)[None, :]
             prompt_cache = cache_mod.make_prompt_cache(m)
             if kv_bits is not None:
-                # mlx_lm.generate.maybe_quantize_kv_cache mutates the list in
-                # place; mlx_lm 0.31.x moved it out of mlx_lm.models.cache.
-                from mlx_lm.generate import maybe_quantize_kv_cache as _mqc
+                # mlx_lm 0.31.x moved maybe_quantize_kv_cache out of
+                # mlx_lm.models.cache into mlx_lm.generate. Try the new
+                # location first, fall back for older mlx_lm versions.
+                _mqc = getattr(cache_mod, "maybe_quantize_kv_cache", None)
+                if _mqc is None:
+                    from mlx_lm.generate import maybe_quantize_kv_cache as _mqc
                 _mqc(
                     prompt_cache,
                     quantized_kv_start=0,
