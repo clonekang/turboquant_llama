@@ -10,6 +10,11 @@
 #include <rocwmma/rocwmma-version.hpp>
 #endif // defined(GGML_HIP_ROCWMMA_FATTN)
 
+#ifdef GGML_USE_NCCL
+#include <rccl/rccl.h>
+#endif // GGML_USE_NCCL
+
+
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
 #define CUBLAS_GEMM_DEFAULT_TENSOR_OP HIPBLAS_GEMM_DEFAULT
 #define CUBLAS_OP_N HIPBLAS_OP_N
@@ -39,13 +44,11 @@
 #define __SHFL_UP_SYNC_4(mask, var, delta, width) __shfl_up(var, delta, width)
 #define __SHFL_UP_GET(_1, _2, _3, _4, NAME, ...) NAME
 #define __shfl_up_sync(...) __SHFL_UP_GET(__VA_ARGS__, __SHFL_UP_SYNC_4, __SHFL_UP_SYNC_3)(__VA_ARGS__)
-
 // __shfl_xor_sync: support 3-arg and 4-arg calls (HIP ignores mask)
 #define __SHFL_XOR_SYNC_3(mask, var, laneMask)        __shfl_xor(var, laneMask, warpSize)
 #define __SHFL_XOR_SYNC_4(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
 #define __SHFL_XOR_GET(_1, _2, _3, _4, NAME, ...) NAME
 #define __shfl_xor_sync(...) __SHFL_XOR_GET(__VA_ARGS__, __SHFL_XOR_SYNC_4, __SHFL_XOR_SYNC_3)(__VA_ARGS__)
-
 // __shfl_down_sync: support 3-arg and 4-arg calls (HIP ignores mask)
 #define __SHFL_DOWN_SYNC_3(mask, var, delta)        __shfl_down(var, delta, warpSize)
 #define __SHFL_DOWN_SYNC_4(mask, var, delta, width) __shfl_down(var, delta, width)
@@ -74,6 +77,7 @@
 #define cudaDeviceProp hipDeviceProp_t
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaError_t hipError_t
+#define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
 #define cudaEventCreateWithFlags hipEventCreateWithFlags

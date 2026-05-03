@@ -16,6 +16,7 @@
   rocmPackages,
   vulkan-headers,
   vulkan-loader,
+  spirv-headers,
   openssl,
   shaderc,
   useBlas ?
@@ -102,6 +103,7 @@ let
     vulkan-headers
     vulkan-loader
     shaderc
+    spirv-headers
   ];
 in
 
@@ -145,6 +147,7 @@ effectiveStdenv.mkDerivation (finalAttrs: {
       ninja
       pkg-config
       git
+      spirv-headers
     ]
     ++ optionals useCuda [
       cudaPackages.cuda_nvcc

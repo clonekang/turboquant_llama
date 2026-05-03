@@ -443,6 +443,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_pad_reflect_1d(ctx, idx);
             } break;
+        case GGML_OP_ROLL:
+            {
+                n_fuse = ggml_metal_op_roll(ctx, idx);
+            } break;
         case GGML_OP_ARANGE:
             {
                 n_fuse = ggml_metal_op_arange(ctx, idx);
@@ -818,6 +822,13 @@ int ggml_metal_op_unary(ggml_metal_op_t ctx, int idx) {
     if (op->op == GGML_OP_CLAMP) {
         args.min = ggml_get_op_params_f32(op, 0);
         args.max = ggml_get_op_params_f32(op, 1);
+    }
+
+    if (op->op == GGML_OP_UNARY && ggml_get_unary_op(op) == GGML_UNARY_OP_XIELU) {
+        args.slope = ggml_get_op_params_f32(op, 1); // alpha_n
+        args.scale = ggml_get_op_params_f32(op, 2); // alpha_p
+        args.bias  = ggml_get_op_params_f32(op, 3); // beta
+        args.val   = ggml_get_op_params_f32(op, 4); // eps
     }
 
     auto pipeline = ggml_metal_library_get_pipeline_unary(lib, op);
@@ -2113,6 +2124,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
            op->src[0]->type == GGML_TYPE_F32  || // TODO: helper function
            op->src[0]->type == GGML_TYPE_F16  ||
            op->src[0]->type == GGML_TYPE_BF16 ||
+           op->src[0]->type == GGML_TYPE_Q1_0 ||
            op->src[0]->type == GGML_TYPE_Q4_0 ||
            op->src[0]->type == GGML_TYPE_Q4_1 ||
            op->src[0]->type == GGML_TYPE_Q5_0 ||
@@ -2723,8 +2735,10 @@ static bool ggml_metal_op_flash_attn_ext_use_turbo_flash(const ggml_tensor * op)
     // Check environment variable to force enable (bypasses other checks)
     if (turbo_flash_env && turbo_flash_env[0] == '1') return true;
 
-    // Default: enabled for all qualifying configurations
-    return true;
+    // Default: disabled — TurboFlash two-pass kernel produces corrupt output
+    // on Apple10 (M5 Max) and possibly other Metal4 GPUs. Use TURBO_FLASH=1
+    // to opt-in for testing. See PR #91.
+    return false;
 }
 
 size_t ggml_metal_op_flash_attn_ext_extra_pad(const ggml_tensor * op) {
@@ -2838,10 +2852,12 @@ size_t ggml_metal_op_flash_attn_ext_extra_tmp(const ggml_tensor * op) {
         res += ggml_type_size(GGML_TYPE_F32)*(ne01_max*ne02*ne03*nwg*(ne20 + 2));
     }
 
-    // TurboFlash two-pass: always reserve partial result buffer to avoid graph reallocations
-    // partial_out: float[n_bh * n_blocks * dv]
-    // partial_ms:  float[n_bh * n_blocks * 2]  (max + sum per block)
-    {
+    // TurboFlash two-pass temp is only needed when the TurboFlash path is eligible.
+    // Reserving it unconditionally can massively inflate graph scratch usage for
+    // large-context models even when the normal FA path is selected.
+    if (ggml_metal_op_flash_attn_ext_use_turbo_flash(op)) {
+        // partial_out: float[n_bh * n_blocks * dv]
+        // partial_ms:  float[n_bh * n_blocks * 2]  (max + sum per block)
         const int64_t n_bh = ne01 * ne02 * ne03;
         const int64_t ne11 = op->src[1]->ne[1];  // T_kv
         const int64_t n_blocks = (ne11 + 63) / 64;  // ceil(T_kv / 64)
@@ -4342,6 +4358,59 @@ int ggml_metal_op_upscale(ggml_metal_op_t ctx, int idx) {
     auto pipeline = ggml_metal_library_get_pipeline_upscale(lib, op);
 
     const int nth = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), ne0);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         2);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, ne1, ne2, ne3, nth, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_roll(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    GGML_TENSOR_LOCALS( int32_t, ne0, op->src[0], ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb0, op->src[0], nb);
+    GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
+    GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+
+    const int32_t s0 = ggml_get_op_params_i32(op, 0);
+    const int32_t s1 = ggml_get_op_params_i32(op, 1);
+    const int32_t s2 = ggml_get_op_params_i32(op, 2);
+    const int32_t s3 = ggml_get_op_params_i32(op, 3);
+
+    ggml_metal_kargs_roll args = {
+        /*.ne00 =*/ ne00,
+        /*.ne01 =*/ ne01,
+        /*.ne02 =*/ ne02,
+        /*.ne03 =*/ ne03,
+        /*.nb00 =*/ nb00,
+        /*.nb01 =*/ nb01,
+        /*.nb02 =*/ nb02,
+        /*.nb03 =*/ nb03,
+        /*.ne0  =*/ ne0,
+        /*.ne1  =*/ ne1,
+        /*.ne2  =*/ ne2,
+        /*.ne3  =*/ ne3,
+        /*.nb0  =*/ nb0,
+        /*.nb1  =*/ nb1,
+        /*.nb2  =*/ nb2,
+        /*.nb3  =*/ nb3,
+        /*.s0   =*/ s0,
+        /*.s1   =*/ s1,
+        /*.s2   =*/ s2,
+        /*.s3   =*/ s3
+    };
+
+    auto pipeline = ggml_metal_library_get_pipeline_roll(lib, op);
+
+    const int nth = std::min(1024, ne0);
 
     ggml_metal_encoder_set_pipeline(enc, pipeline);
     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
